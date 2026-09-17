@@ -1,0 +1,19 @@
+[project]
+name = "vishunuproject"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "vimalanadnh2010", email = "ceitvimalanandh27@gmail.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "mcp[cli]<2",
+]
+
+[project.scripts]
+vishunuproject = "vishunuproject:main"
+
+[build-system]
+requires = ["uv_build>=0.12.5,<0.13.0"]
+build-backend = "uv_build"

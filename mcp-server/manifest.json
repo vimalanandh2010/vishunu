@@ -1,0 +1,20 @@
+{
+  "manifest_version": "0.1",
+  "name": "vishnu-mcp-server",
+  "display_name": "Vishnu MCP Server",
+  "version": "1.0.0",
+  "description": "MCP server for my MERN application",
+  "author": {
+    "name": "Vimalanandh"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "server.js",
+    "mcp_config": {
+      "command": "node",
+      "args": [
+        "${__dirname}/server.js"
+      ]
+    }
+  }
+}
