@@ -8,6 +8,11 @@ import dotenv from 'dotenv';
 import connectDB from './config/db.js';
 import authRoutes from './routes/authRoutes.js';
 import userRoutes from './routes/userRoutes.js';
+import postRoutes from './routes/postRoutes.js';
+import commentRoutes from './routes/commentRoutes.js';
+import storyRoutes from './routes/storyRoutes.js';
+import messageRoutes from './routes/messageRoutes.js';
+import notificationRoutes from './routes/notificationRoutes.js';
 import { notFound, errorHandler } from './middleware/errorMiddleware.js';
 import { generalLimiter } from './middleware/rateLimitMiddleware.js';
 
@@ -40,14 +45,21 @@ app.get('/', (req, res) => {
   res.json({ status: 'ok', service: 'instagram-clone-api' });
 });
 
+// Serve locally-stored uploads (fallback when Cloudinary is not configured)
+app.use('/uploads', express.static('uploads'));
+
 // Mount routes
 app.use('/api/auth', authRoutes);
 app.use('/api/user', userRoutes);
+app.use('/api/posts', postRoutes);
+app.use('/api/comments', commentRoutes);
+app.use('/api/stories', storyRoutes);
+app.use('/api/messages', messageRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // 404 + centralized error handling
 app.use(notFound);
 app.use(errorHandler);
-
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
