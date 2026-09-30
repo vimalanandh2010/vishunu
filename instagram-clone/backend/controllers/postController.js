@@ -1,6 +1,7 @@
 import Post from '../models/Post.js';
 import User from '../models/User.js';
 import Notification from '../models/Notification.js';
+import { fileUrl } from '../middleware/uploadMiddleware.js';
 
 // @desc    Create a new post
 // @route   POST /api/posts
@@ -25,7 +26,7 @@ export const createPost = async (req, res, next) => {
     const post = await Post.create({
       user: req.user.id,
       caption,
-      mediaUrl: req.file.path,
+      mediaUrl: fileUrl(req, req.file),
       mediaType,
       location,
       tags: parsedTags,

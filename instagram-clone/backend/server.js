@@ -53,7 +53,7 @@ app.get('/', (req, res) => {
 });
 
 // Serve locally-stored uploads (fallback when Cloudinary is not configured)
-app.use('/uploads', express.static('uploads'));
+app.use('/uploads', express.static(path.join(path.dirname(fileURLToPath(import.meta.url)), 'uploads')));
 
 // Mount routes
 app.use('/api/auth', authRoutes);

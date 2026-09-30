@@ -1,6 +1,7 @@
 import Conversation from '../models/Conversation.js';
 import Message from '../models/Message.js';
 import User from '../models/User.js';
+import { fileUrl } from '../middleware/uploadMiddleware.js';
 
 // @desc    Send a message (Starts conversation if new)
 // @route   POST /api/messages
@@ -37,7 +38,7 @@ export const sendMessage = async (req, res, next) => {
     let mediaUrl = null;
     let mediaType = null;
     if (req.file) {
-      mediaUrl = req.file.path;
+      mediaUrl = fileUrl(req, req.file);
       if (req.file.mimetype.startsWith('image/')) mediaType = 'image';
       else if (req.file.mimetype.startsWith('video/')) mediaType = 'video';
       else mediaType = 'file';

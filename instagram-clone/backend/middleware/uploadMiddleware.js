@@ -19,6 +19,18 @@ const cloudinaryConfigured =
   process.env.CLOUDINARY_API_KEY &&
   process.env.CLOUDINARY_API_SECRET;
 
+// Store uploads next to the backend regardless of process cwd
+const uploadDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'uploads');
+
+// Build a fetchable web URL for an uploaded file. With Cloudinary, `path` is
+// already an https URL; with disk storage, return a root-relative /uploads URL
+// so it stays same-origin behind the frontend proxy (helmet CORP-safe).
+export function fileUrl(req, file) {
+  if (!file) return null;
+  if (/^https?:\/\//i.test(file.path)) return file.path;
+  return `/uploads/${encodeURIComponent(file.filename)}`;
+}
+
 const storage = cloudinaryConfigured
   ? new CloudinaryStorage({
       cloudinary: cloudinary,
@@ -29,7 +41,6 @@ const storage = cloudinaryConfigured
       },
     })
   : (() => {
-      const uploadDir = path.join(process.cwd(), 'uploads');
       if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
       return multer.diskStorage({
         destination: (req, file, cb) => cb(null, uploadDir),

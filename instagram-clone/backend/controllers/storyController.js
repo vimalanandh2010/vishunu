@@ -1,5 +1,6 @@
 import Story from '../models/Story.js';
 import User from '../models/User.js';
+import { fileUrl } from '../middleware/uploadMiddleware.js';
 
 // @desc    Create a new story
 // @route   POST /api/stories
@@ -14,7 +15,7 @@ export const createStory = async (req, res, next) => {
 
     const story = await Story.create({
       user: req.user.id,
-      mediaUrl: req.file.path,
+      mediaUrl: fileUrl(req, req.file),
       mediaType,
     });
 
