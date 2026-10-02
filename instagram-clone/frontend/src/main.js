@@ -297,7 +297,7 @@ async function renderHome(openComposer = false) {
       <div class="home-top">
         <img src="${logo1}" class="home-logo" alt="VELOVE" />
         <h2 class="home-title">Home</h2>
-        <img class="avatar home-me" src="${currentUser?.avatar || logo1}" alt="me" onerror="this.src='${logo1}'" />
+        <img class="avatar home-me" id="home-me" src="${currentUser?.avatar || logo1}" alt="me" onerror="this.src='${logo1}'" />
       </div>
 
       ${openComposer ? `
@@ -342,7 +342,7 @@ async function renderHome(openComposer = false) {
             ? `<video class="feed-media" src="${src}" controls></video>`
             : `<img class="feed-media" src="${src}" onerror="this.style.display='none'" />`)
           : ''}
-          <div class="feed-caption"><strong>${p.user?.username}</strong> ${p.caption || ''}</div>
+          <div class="feed-caption"><strong data-username="${p.user?.username || ''}">${p.user?.username}</strong> ${p.caption || ''}</div>
         </div>`;
       }).join('');
     } else {
@@ -351,6 +351,12 @@ async function renderHome(openComposer = false) {
   } catch {
     document.getElementById('feed').innerHTML = `<div class="empty">Couldn't load feed.</div>`;
   }
+
+  // Navigate to profiles
+  document.getElementById('home-me')?.addEventListener('click', () => renderProfile(currentUser?.username));
+  document.querySelectorAll('.feed-caption strong[data-username]').forEach((el) => {
+    el.addEventListener('click', () => el.dataset.username && renderProfile(el.dataset.username));
+  });
 
   if (openComposer) {
     const fileInput = document.getElementById('post-file');
@@ -365,6 +371,119 @@ async function renderHome(openComposer = false) {
       const data = await res.json();
       if (res.ok && data.success) { msg.textContent = 'Posted! ✓'; msg.className = 'msg ok'; setTimeout(() => renderHome(), 700); }
       else { msg.textContent = data.message || 'Post failed'; msg.className = 'msg err'; }
+    };
+  }
+}
+
+/* ============================== screen: profile =========================== */
+async function renderProfile(username) {
+  app.innerHTML = `
+  <div class="page onb-page">
+    <main class="auth-wrap"><section class="card profile-card">
+      <div class="home-top">
+        <button id="pf-back" class="link-btn back">← Home</button>
+        <h2 class="home-title">Profile</h2>
+        <span class="home-top-spacer"></span>
+      </div>
+      <div class="people-loading">Loading profile…</div>
+    </section></main>
+  </div>`;
+  document.getElementById('pf-back').onclick = () => renderHome();
+
+  let profile, userPosts;
+  try {
+    const [pRes, postsRes] = await Promise.all([
+      fetch(`${API_URL}/user/profile/${encodeURIComponent(username)}`, { credentials: 'include' }),
+      fetch(`${API_URL}/posts/user/${encodeURIComponent(username)}`, { credentials: 'include' }),
+    ]);
+    const pData = await pRes.json();
+    if (!pRes.ok || !pData.success) throw new Error(pData.message || 'Profile not found');
+    profile = pData.profile;
+    const postsData = await postsRes.json().catch(() => ({}));
+    userPosts = postsData.posts || [];
+  } catch (e) {
+    document.querySelector('.profile-card .people-loading').outerHTML =
+      `<div class="empty">${e.message || "Couldn't load profile."}</div>`;
+    return;
+  }
+
+  const isMe = currentUser && (profile._id === currentUser._id || profile.username === currentUser.username);
+  const following = !!profile.isFollowing;
+  const web = profile.website
+    ? /^https?:\/\//i.test(profile.website) ? profile.website : `https://${profile.website}`
+    : null;
+
+  app.innerHTML = `
+  <div class="page onb-page">
+    <main class="auth-wrap"><section class="card profile-card">
+      <div class="home-top">
+        <button id="pf-back" class="link-btn back">← Home</button>
+        <h2 class="home-title">Profile</h2>
+        <span class="home-top-spacer"></span>
+      </div>
+
+      <div class="pf-head">
+        <img class="avatar pf-avatar" src="${profile.avatar || logo1}" alt="${profile.username}" onerror="this.src='${logo1}'" />
+        <div class="pf-id">
+          <div class="pf-name">${profile.fullName || profile.username}
+            ${profile.isVerified ? '<span class="pf-verified" title="Verified">✔️</span>' : ''}</div>
+          <div class="pf-username">@${profile.username}</div>
+        </div>
+      </div>
+
+      ${profile.bio ? `<p class="pf-bio">${profile.bio}</p>` : ''}
+      ${web ? `<a class="pf-web" href="${web}" target="_blank" rel="noopener">🔗 ${profile.website}</a>` : ''}
+
+      <div class="pf-stats">
+        <div class="pf-stat"><strong id="pf-posts">${profile.postsCount ?? userPosts.length}</strong><span>posts</span></div>
+        <div class="pf-stat"><strong id="pf-followers">${profile.followersCount}</strong><span>followers</span></div>
+        <div class="pf-stat"><strong id="pf-following">${profile.followingCount}</strong><span>following</span></div>
+      </div>
+
+      ${isMe
+        ? `<button id="pf-edit" class="btn-gradient btn-wide">Edit Profile</button>`
+        : `<button id="pf-follow" class="pf-follow ${following ? 'on' : ''}" data-id="${profile._id}">${following ? 'Following ✓' : 'Follow'}</button>`}
+
+      <h3 class="feed-head">Posts</h3>
+      ${userPosts.length
+        ? `<div class="pf-grid">${userPosts.map((p) => {
+            const src = mediaSrc(p.mediaUrl);
+            return src
+              ? (p.mediaType === 'video'
+                ? `<div class="pf-cell"><video src="${src}" muted></video></div>`
+                : `<div class="pf-cell"><img src="${src}" alt="${p.caption || 'post'}" onerror="this.parentElement.classList.add('broken')" /></div>`)
+              : `<div class="pf-cell"><div class="pf-cap">${p.caption || ''}</div></div>`;
+          }).join('')}</div>`
+        : `<div class="empty">No posts yet 📷</div>`}
+    </section></main>
+  </div>`;
+
+  document.getElementById('pf-back').onclick = () => renderHome();
+  const editBtn = document.getElementById('pf-edit');
+  if (editBtn) editBtn.onclick = () => renderOnboarding(1);
+
+  const followBtn = document.getElementById('pf-follow');
+  if (followBtn) {
+    followBtn.onclick = async () => {
+      followBtn.disabled = true;
+      try {
+        const res = await fetch(`${API_URL}/user/follow/${followBtn.dataset.id}`, {
+          method: 'POST', credentials: 'include',
+        });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          const nowFollowing = data.isFollowing ?? !following;
+          followBtn.textContent = nowFollowing ? 'Following ✓' : 'Follow';
+          followBtn.classList.toggle('on', nowFollowing);
+          const fc = document.getElementById('pf-followers');
+          if (fc) fc.textContent = parseInt(fc.textContent, 10) + (nowFollowing ? 1 : -1);
+        } else {
+          followBtn.textContent = data.message || 'Failed';
+        }
+      } catch {
+        followBtn.textContent = 'Network error';
+      }
+      followBtn.disabled = false;
     };
   }
 }

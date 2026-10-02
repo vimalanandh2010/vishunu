@@ -259,6 +259,32 @@ body {
 
 .link-btn { border: 0; background: transparent; color: var(--violet); font-family: var(--sans); font-weight: 600; font-size: 13px; margin-top: 10px; cursor: pointer; }
 
+/* ============ profile page ============ */
+.profile-card { text-align: left; }
+.home-top .link-btn.back { margin: 0; }
+.home-top-spacer { width: 28px; display: inline-block; }
+.pf-head { display: flex; align-items: center; gap: 14px; margin: 14px 0 4px; }
+.pf-avatar { width: 74px; height: 74px; }
+.pf-id { min-width: 0; }
+.pf-name { font-weight: 700; font-size: 16px; color: var(--ink); display: flex; align-items: center; gap: 6px; }
+.pf-verified { font-size: 13px; }
+.pf-username { color: var(--muted); font-size: 13px; }
+.pf-bio { margin: 10px 0 0; font-size: 13.5px; color: var(--ink); line-height: 1.45; }
+.pf-web { display: inline-block; margin-top: 6px; font-size: 13px; color: var(--violet); text-decoration: none; font-weight: 600; }
+.pf-stats { display: flex; justify-content: space-around; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 10px 0; margin: 14px 0; }
+.pf-stat { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.pf-stat strong { font-size: 16px; color: var(--ink); }
+.pf-stat span { font-size: 11.5px; color: var(--muted); }
+.pf-follow { width: 100%; padding: 11px; border: 0; border-radius: 10px; font-family: var(--sans); font-weight: 700; font-size: 14px; cursor: pointer;
+  background: linear-gradient(135deg, var(--violet), var(--orange)); color: #fff; }
+.pf-follow.on { background: #efeaf8; color: var(--violet); }
+.pf-follow:disabled { opacity: 0.6; cursor: wait; }
+.pf-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin-top: 10px; }
+.pf-cell { position: relative; aspect-ratio: 1; overflow: hidden; border-radius: 6px; background: #f4f2f8; }
+.pf-cell img, .pf-cell video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.pf-cell.broken { display: flex; align-items: center; justify-content: center; padding: 6px; font-size: 10.5px; color: var(--muted); text-align: center; }
+.pf-cap { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; padding: 8px; font-size: 11.5px; color: var(--ink); text-align: center; overflow: hidden; }
+
 /* ============ responsive ============ */
 @media (max-width: 960px) {
   .page { grid-template-columns: 1fr; margin: 0; }

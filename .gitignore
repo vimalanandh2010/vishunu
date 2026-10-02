@@ -1,0 +1,4 @@
+
+# backend stdout/stderr from dev server
+server.out.log
+server.err.log
