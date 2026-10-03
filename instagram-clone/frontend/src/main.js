@@ -31,6 +31,74 @@ function mediaSrc(url) {
   return url;
 }
 
+// Escape user-generated text before injecting into innerHTML (XSS guard).
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+function timeAgo(dateStr) {
+  if (!dateStr) return '';
+  const s = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d ago`;
+  return new Date(dateStr).toLocaleDateString();
+}
+
+function showToast(msg, type = 'ok') {
+  let box = document.getElementById('toasts');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'toasts';
+    document.body.appendChild(box);
+  }
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  box.appendChild(t);
+  setTimeout(() => { t.classList.add('hide'); setTimeout(() => t.remove(), 260); }, 2600);
+}
+
+/* ============================ history/hash router ========================= */
+// Screens push hash entries so the browser Back button walks the same trail.
+function pushHash(hash) {
+  try {
+    history.pushState({ velove: (history.state?.velove || 0) + 1 }, '', hash);
+  } catch { /* ignore */ }
+}
+
+function goBack(fallback) {
+  if ((history.state?.velove || 0) > 0) history.back();
+  else fallback();
+}
+
+function clearHash() {
+  try { history.replaceState({ velove: 0 }, '', location.pathname); } catch { /* ignore */ }
+}
+
+// Returns true when the current hash matched a route and rendered it.
+function routeFromLocation(fallbackHome = true) {
+  if (!loadSession()?.username) return false;
+  const h = location.hash;
+  const mPost = h.match(/^#\/post\/([a-f0-9]{24})$/i);
+  if (mPost) { renderPostDetail(mPost[1], false); return true; }
+  const mProf = h.match(/^#\/profile\/([^/]+)$/);
+  if (mProf) { renderProfile(decodeURIComponent(mProf[1]), false); return true; }
+  if (h === '' || h === '#/home') {
+    if (fallbackHome) { renderHome(); return true; }
+    return false;
+  }
+  return false;
+}
+
+window.addEventListener('hashchange', () => routeFromLocation(true));
+
 /* ================================= markup ================================= */
 const googleSvg = `
   <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
@@ -52,6 +120,7 @@ const icons = {
   plus: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>`,
   search: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>`,
   chevron: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>`,
+  comment: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>`,
 };
 
 const features = [
@@ -320,6 +389,7 @@ async function renderHome(openComposer = false) {
   document.getElementById('logout').onclick = async () => {
     await fetch(`${API_URL}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(() => {});
     clearSession();
+    clearHash();
     mode = 'signup';
     renderAuth();
   };
@@ -333,16 +403,16 @@ async function renderHome(openComposer = false) {
       feed.innerHTML = data.posts.map((p) => {
         const src = mediaSrc(p.mediaUrl);
         return `
-        <div class="feed-post">
+        <div class="feed-post" data-id="${p._id}">
           <div class="feed-head-row">
             <img class="avatar" src="${p.user?.avatar || logo1}" onerror="this.src='${logo1}'" />
-            <strong>${p.user?.username || 'unknown'}</strong>
+            <strong>${escapeHtml(p.user?.username || 'unknown')}</strong>
           </div>
           ${src ? (p.mediaType === 'video'
             ? `<video class="feed-media" src="${src}" controls></video>`
             : `<img class="feed-media" src="${src}" onerror="this.style.display='none'" />`)
           : ''}
-          <div class="feed-caption"><strong data-username="${p.user?.username || ''}">${p.user?.username}</strong> ${p.caption || ''}</div>
+          <div class="feed-caption"><strong data-username="${escapeHtml(p.user?.username || '')}">${escapeHtml(p.user?.username)}</strong> ${escapeHtml(p.caption || '')}</div>
         </div>`;
       }).join('');
     } else {
@@ -352,10 +422,13 @@ async function renderHome(openComposer = false) {
     document.getElementById('feed').innerHTML = `<div class="empty">Couldn't load feed.</div>`;
   }
 
-  // Navigate to profiles
+  // Navigate to profiles / post detail
   document.getElementById('home-me')?.addEventListener('click', () => renderProfile(currentUser?.username));
   document.querySelectorAll('.feed-caption strong[data-username]').forEach((el) => {
     el.addEventListener('click', () => el.dataset.username && renderProfile(el.dataset.username));
+  });
+  document.querySelectorAll('.feed-post[data-id]').forEach((el) => {
+    el.querySelector('.feed-media')?.addEventListener('click', () => renderPostDetail(el.dataset.id));
   });
 
   if (openComposer) {
@@ -376,7 +449,8 @@ async function renderHome(openComposer = false) {
 }
 
 /* ============================== screen: profile =========================== */
-async function renderProfile(username) {
+async function renderProfile(username, push = true) {
+  if (push) pushHash(`#/profile/${encodeURIComponent(username || '')}`);
   app.innerHTML = `
   <div class="page onb-page">
     <main class="auth-wrap"><section class="card profile-card">
@@ -425,13 +499,13 @@ async function renderProfile(username) {
       <div class="pf-head">
         <img class="avatar pf-avatar" src="${profile.avatar || logo1}" alt="${profile.username}" onerror="this.src='${logo1}'" />
         <div class="pf-id">
-          <div class="pf-name">${profile.fullName || profile.username}
+          <div class="pf-name">${escapeHtml(profile.fullName || profile.username)}
             ${profile.isVerified ? '<span class="pf-verified" title="Verified">✔️</span>' : ''}</div>
-          <div class="pf-username">@${profile.username}</div>
+          <div class="pf-username">@${escapeHtml(profile.username)}</div>
         </div>
       </div>
 
-      ${profile.bio ? `<p class="pf-bio">${profile.bio}</p>` : ''}
+      ${profile.bio ? `<p class="pf-bio">${escapeHtml(profile.bio)}</p>` : ''}
       ${web ? `<a class="pf-web" href="${web}" target="_blank" rel="noopener">🔗 ${profile.website}</a>` : ''}
 
       <div class="pf-stats">
@@ -450,15 +524,18 @@ async function renderProfile(username) {
             const src = mediaSrc(p.mediaUrl);
             return src
               ? (p.mediaType === 'video'
-                ? `<div class="pf-cell"><video src="${src}" muted></video></div>`
-                : `<div class="pf-cell"><img src="${src}" alt="${p.caption || 'post'}" onerror="this.parentElement.classList.add('broken')" /></div>`)
-              : `<div class="pf-cell"><div class="pf-cap">${p.caption || ''}</div></div>`;
+                ? `<div class="pf-cell" data-id="${p._id}" title="Open post"><video src="${src}" muted></video></div>`
+                : `<div class="pf-cell" data-id="${p._id}" title="Open post"><img src="${src}" alt="${escapeHtml(p.caption || 'post')}" onerror="this.parentElement.classList.add('broken')" /></div>`)
+              : `<div class="pf-cell" data-id="${p._id}" title="Open post"><div class="pf-cap">${escapeHtml(p.caption || '')}</div></div>`;
           }).join('')}</div>`
         : `<div class="empty">No posts yet 📷</div>`}
     </section></main>
   </div>`;
 
-  document.getElementById('pf-back').onclick = () => renderHome();
+  document.getElementById('pf-back').onclick = () => goBack(() => { clearHash(); renderHome(); });
+  document.querySelectorAll('.pf-cell[data-id]').forEach((cell) => {
+    cell.addEventListener('click', () => renderPostDetail(cell.dataset.id));
+  });
   const editBtn = document.getElementById('pf-edit');
   if (editBtn) editBtn.onclick = () => renderOnboarding(1);
 
@@ -484,6 +561,353 @@ async function renderProfile(username) {
         followBtn.textContent = 'Network error';
       }
       followBtn.disabled = false;
+    };
+  }
+}
+
+/* ============================= screen: post detail ======================== */
+async function renderPostDetail(postId, push = true) {
+  if (!loadSession()?.username) return renderAuth();
+  if (push) pushHash(`#/post/${postId}`);
+
+  app.innerHTML = `
+  <div class="page onb-page">
+    <main class="auth-wrap"><section class="card post-card">
+      <div class="home-top">
+        <button id="pd-back" class="link-btn back">← Back</button>
+        <h2 class="home-title">Post</h2>
+        <span class="home-top-spacer"></span>
+      </div>
+      <div class="pd-body pd-loading">
+        <div class="pd-skeleton pd-sk-media"></div>
+        <div class="pd-info">
+          <div class="pd-skeleton pd-sk-line w60"></div>
+          <div class="pd-skeleton pd-sk-line w90"></div>
+          <div class="pd-skeleton pd-sk-line w80"></div>
+          <div class="pd-skeleton pd-sk-line w40"></div>
+        </div>
+      </div>
+    </section></main>
+  </div>`;
+  document.getElementById('pd-back').onclick = () => goBack(() => { clearHash(); renderHome(); });
+
+  // READ: post + comments (+ author follow state when it's not my post)
+  let post, comments = [], authorProfile = null;
+  try {
+    const [pRes, cRes] = await Promise.all([
+      fetch(`${API_URL}/posts/${postId}`, { credentials: 'include' }),
+      fetch(`${API_URL}/comments/${postId}`, { credentials: 'include' }),
+    ]);
+    const pData = await pRes.json();
+    if (!pRes.ok || !pData.success) throw new Error(pData.message || 'Post not found');
+    post = pData.post;
+    const cData = await cRes.json().catch(() => ({}));
+    comments = cData.comments || [];
+
+    const isOwn = post.user?._id === currentUser?._id;
+    if (!isOwn && post.user?.username) {
+      const uRes = await fetch(`${API_URL}/user/profile/${encodeURIComponent(post.user.username)}`, { credentials: 'include' });
+      const uData = await uRes.json().catch(() => ({}));
+      if (uRes.ok && uData.success) authorProfile = uData.profile;
+    }
+  } catch {
+    app.innerHTML = `
+    <div class="page onb-page">
+      <main class="auth-wrap"><section class="card post-card">
+        <div class="home-top">
+          <button id="pd-back" class="link-btn back">← Back</button>
+          <h2 class="home-title">Post</h2>
+          <span class="home-top-spacer"></span>
+        </div>
+        <div class="pd-error empty">
+          <div class="pd-err-icon">🗑️</div>
+          <h3>Post unavailable</h3>
+          <p>This post is no longer available — it may have been deleted.</p>
+          <button id="pd-err-home" class="btn-gradient btn-wide">Back to Home</button>
+        </div>
+      </section></main>
+    </div>`;
+    document.getElementById('pd-back').onclick = () => { clearHash(); renderHome(); };
+    document.getElementById('pd-err-home').onclick = () => { clearHash(); renderHome(); };
+    return;
+  }
+
+  const author = post.user || {};
+  const isOwn = author._id === currentUser?._id;
+  const liked = (post.likes || []).some((id) => String(id._id || id) === currentUser?._id);
+  const src = mediaSrc(post.mediaUrl);
+
+  const commentRow = (c) => {
+    const canDelete = c.user?._id === currentUser?._id || isOwn; // comment owner or post owner
+    return `
+    <div class="pd-comment" data-id="${c._id}">
+      <img class="avatar sm" src="${c.user?.avatar || logo1}" onerror="this.src='${logo1}'" />
+      <div class="pd-comment-body">
+        <div class="pd-c-top">
+          <strong class="pd-c-username" data-username="${escapeHtml(c.user?.username || '')}">@${escapeHtml(c.user?.username || 'unknown')}</strong>
+          <span class="pd-c-time">${timeAgo(c.createdAt)}</span>
+        </div>
+        <p class="pd-c-text">${escapeHtml(c.text)}</p>
+      </div>
+      ${canDelete ? `<button class="pd-c-del" data-id="${c._id}" title="Delete comment" aria-label="Delete comment">✕</button>` : ''}
+    </div>`;
+  };
+
+  app.innerHTML = `
+  <div class="page onb-page">
+    <main class="auth-wrap"><section class="card post-card">
+      <div class="home-top">
+        <button id="pd-back" class="link-btn back">← Back</button>
+        <h2 class="home-title">Post</h2>
+        <span class="home-top-spacer"></span>
+      </div>
+
+      <div class="pd-body">
+        <div class="pd-media ${src ? '' : 'pd-media-empty'}">
+          ${src ? (post.mediaType === 'video'
+            ? `<video class="pd-img" src="${src}" controls></video>`
+            : `<img class="pd-img" id="pd-image" src="${src}" alt="post media" onerror="this.parentElement.classList.add('pd-media-empty'); this.remove()" />`)
+          : `<div class="pd-cap-fallback">${escapeHtml(post.caption || 'No media')}</div>`}
+        </div>
+
+        <div class="pd-info">
+          <div class="pd-author">
+            <img class="avatar" src="${author.avatar || logo1}" onerror="this.src='${logo1}'" />
+            <div class="pd-author-meta">
+              <strong class="pd-username" data-username="${escapeHtml(author.username || '')}">@${escapeHtml(author.username || 'unknown')}</strong>
+              <span class="pd-time">${timeAgo(post.createdAt)}</span>
+            </div>
+            ${!isOwn && author.username ? `<button id="pd-follow" class="pf-follow pd-follow ${authorProfile?.isFollowing ? 'on' : ''}" data-id="${author._id}">${authorProfile?.isFollowing ? 'Following ✓' : 'Follow'}</button>` : ''}
+          </div>
+
+          <div class="pd-caption-box">
+            <div class="pd-caption" id="pd-caption">${post.caption ? escapeHtml(post.caption) : '<em class="pd-muted">No caption</em>'}</div>
+            ${isOwn ? `
+            <div class="pd-owner-actions">
+              <button id="pd-edit" class="link-btn small">Edit caption</button>
+              <button id="pd-delete" class="link-btn small danger">Delete post</button>
+            </div>` : ''}
+          </div>
+
+          <div class="pd-actions">
+            <button id="pd-like" class="pd-like ${liked ? 'liked' : ''}" aria-label="Like post" aria-pressed="${liked}">
+              ${icons.heart}<span id="pd-like-count">${(post.likes || []).length}</span>
+            </button>
+            <span class="pd-comment-count">${icons.comment}<span id="pd-comment-count">${comments.length}</span></span>
+          </div>
+
+          <div class="pd-comments" id="pd-comments">
+            ${comments.length ? comments.map(commentRow).join('') : `<div class="empty" id="pd-no-comments">No comments yet — be the first!</div>`}
+          </div>
+
+          <form class="pd-comment-form" id="pd-comment-form">
+            <input id="pd-comment-input" type="text" maxlength="1000" placeholder="Add a comment…" autocomplete="off" />
+            <button type="submit" class="btn-gradient btn-small" id="pd-comment-submit">Post</button>
+          </form>
+        </div>
+      </div>
+    </section></main>
+  </div>`;
+
+  document.getElementById('pd-back').onclick = () => goBack(() => { clearHash(); renderHome(); });
+
+  const bindUsername = (el) => el?.addEventListener('click', () => el.dataset.username && renderProfile(el.dataset.username));
+  bindUsername(document.querySelector('.pd-username'));
+  document.querySelectorAll('.pd-c-username[data-username]').forEach(bindUsername);
+
+  /* LIKE: toggle with duplicate-guard (button disabled while in flight) */
+  const likeBtn = document.getElementById('pd-like');
+  const likeCount = document.getElementById('pd-like-count');
+  likeBtn.onclick = async () => {
+    if (likeBtn.disabled) return;
+    likeBtn.disabled = true;
+    try {
+      const res = await fetch(`${API_URL}/posts/like/${postId}`, { method: 'POST', credentials: 'include' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        likeBtn.classList.toggle('liked', data.isLiked);
+        likeBtn.setAttribute('aria-pressed', String(!!data.isLiked));
+        likeCount.textContent = Math.max(0, parseInt(likeCount.textContent, 10) + (data.isLiked ? 1 : -1));
+        likeBtn.classList.add('pop');
+        setTimeout(() => likeBtn.classList.remove('pop'), 180);
+      } else {
+        showToast(data.message || 'Could not update like', 'err');
+      }
+    } catch {
+      showToast('Network error — like not saved', 'err');
+    }
+    likeBtn.disabled = false;
+  };
+
+  /* COMMENTS: add */
+  const commentForm = document.getElementById('pd-comment-form');
+  const commentInput = document.getElementById('pd-comment-input');
+  const commentList = document.getElementById('pd-comments');
+  const commentCount = document.getElementById('pd-comment-count');
+  commentForm.onsubmit = async (e) => {
+    e.preventDefault();
+    const text = commentInput.value.trim();
+    if (!text) { showToast('Comment cannot be empty', 'err'); return; }
+    if (text.length > 1000) { showToast('Comment is too long (max 1000)', 'err'); return; }
+    const submitBtn = document.getElementById('pd-comment-submit');
+    submitBtn.disabled = true;
+    try {
+      const res = await fetch(`${API_URL}/comments/${postId}`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        document.getElementById('pd-no-comments')?.remove();
+        commentList.insertAdjacentHTML('beforeend', commentRow(data.comment));
+        commentList.querySelectorAll('.pd-c-username[data-username]').forEach((el) => {
+          if (!el.dataset.bound) { el.dataset.bound = '1'; bindUsername(el); }
+        });
+        const delBtn = commentList.querySelector(`.pd-c-del[data-id="${data.comment._id}"]`);
+        if (delBtn) bindDeleteComment(delBtn);
+        commentCount.textContent = parseInt(commentCount.textContent, 10) + 1;
+        commentInput.value = '';
+        showToast('Comment added');
+      } else {
+        showToast(data.errors?.[0]?.message || data.message || 'Could not add comment', 'err');
+      }
+    } catch {
+      showToast('Network error — comment not saved', 'err');
+    }
+    submitBtn.disabled = false;
+  };
+
+  /* COMMENTS: delete (authorized rows only) */
+  const bindDeleteComment = (btn) => {
+    if (!btn || btn.dataset.bound) return;
+    btn.dataset.bound = '1';
+    btn.onclick = async () => {
+      btn.disabled = true;
+      try {
+        const res = await fetch(`${API_URL}/comments/${btn.dataset.id}`, { method: 'DELETE', credentials: 'include' });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          document.querySelector(`.pd-comment[data-id="${btn.dataset.id}"]`)?.remove();
+          commentCount.textContent = Math.max(0, parseInt(commentCount.textContent, 10) - 1);
+          if (!commentList.querySelector('.pd-comment')) {
+            commentList.innerHTML = `<div class="empty" id="pd-no-comments">No comments yet — be the first!</div>`;
+          }
+          showToast('Comment deleted');
+        } else {
+          btn.disabled = false;
+          showToast(data.message || 'Could not delete comment', 'err');
+        }
+      } catch {
+        btn.disabled = false;
+        showToast('Network error — comment not deleted', 'err');
+      }
+    };
+  };
+  commentList.querySelectorAll('.pd-c-del').forEach(bindDeleteComment);
+
+  /* FOLLOW author */
+  const followBtn = document.getElementById('pd-follow');
+  if (followBtn) {
+    followBtn.onclick = async () => {
+      followBtn.disabled = true;
+      const wasFollowing = followBtn.classList.contains('on');
+      try {
+        const res = await fetch(`${API_URL}/user/follow/${followBtn.dataset.id}`, { method: 'POST', credentials: 'include' });
+        const data = await res.json();
+        if (res.ok && data.success) {
+          const nowFollowing = data.isFollowing ?? !wasFollowing;
+          followBtn.textContent = nowFollowing ? 'Following ✓' : 'Follow';
+          followBtn.classList.toggle('on', nowFollowing);
+        } else {
+          showToast(data.message || 'Could not update follow', 'err');
+        }
+      } catch {
+        showToast('Network error — follow not saved', 'err');
+      }
+      followBtn.disabled = false;
+    };
+  }
+
+  /* OWNER: edit caption inline */
+  const editBtn = document.getElementById('pd-edit');
+  if (editBtn) {
+    editBtn.onclick = () => {
+      const box = document.querySelector('.pd-caption-box');
+      box.innerHTML = `
+        <textarea id="pd-caption-input" class="ob-textarea" rows="3" maxlength="2200">${escapeHtml(post.caption || '')}</textarea>
+        <div class="pd-owner-actions">
+          <button id="pd-save" class="btn-gradient btn-small">Save</button>
+          <button id="pd-cancel" class="link-btn small">Cancel</button>
+        </div>`;
+      document.getElementById('pd-caption-input').focus();
+      document.getElementById('pd-cancel').onclick = () => renderPostDetail(postId, false);
+      document.getElementById('pd-save').onclick = async () => {
+        const caption = document.getElementById('pd-caption-input').value.trim();
+        if (!caption) { showToast('Caption cannot be empty', 'err'); return; }
+        const saveBtn = document.getElementById('pd-save');
+        saveBtn.disabled = true;
+        try {
+          const res = await fetch(`${API_URL}/posts/${postId}`, {
+            method: 'PUT', credentials: 'include',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ caption }),
+          });
+          const data = await res.json();
+          if (res.ok && data.success) {
+            post.caption = data.post.caption;
+            showToast('Caption updated');
+            renderPostDetail(postId, false);
+          } else {
+            saveBtn.disabled = false;
+            showToast(data.errors?.[0]?.message || data.message || 'Could not save caption', 'err');
+          }
+        } catch {
+          saveBtn.disabled = false;
+          showToast('Network error — caption not saved', 'err');
+        }
+      };
+    };
+  }
+
+  /* OWNER: delete post with confirmation dialog */
+  const deleteBtn = document.getElementById('pd-delete');
+  if (deleteBtn) {
+    deleteBtn.onclick = () => {
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.id = 'pd-modal';
+      overlay.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true">
+          <h3>Delete this post?</h3>
+          <p>This will permanently remove the post and its comments.</p>
+          <div class="modal-actions">
+            <button id="pd-modal-cancel" class="btn-ghost">Cancel</button>
+            <button id="pd-modal-confirm" class="btn-danger">Delete</button>
+          </div>
+        </div>`;
+      document.body.appendChild(overlay);
+      document.getElementById('pd-modal-cancel').onclick = () => overlay.remove();
+      document.getElementById('pd-modal-confirm').onclick = async () => {
+        const confirmBtn = document.getElementById('pd-modal-confirm');
+        confirmBtn.disabled = true;
+        try {
+          const res = await fetch(`${API_URL}/posts/${postId}`, { method: 'DELETE', credentials: 'include' });
+          const data = await res.json();
+          if (res.ok && data.success) {
+            overlay.remove();
+            showToast('Post deleted');
+            try { history.replaceState({ velove: 0 }, '', `#/profile/${encodeURIComponent(currentUser.username)}`); } catch { /* ignore */ }
+            renderProfile(currentUser.username, false);
+          } else {
+            confirmBtn.disabled = false;
+            showToast(data.message || 'Could not delete post', 'err');
+          }
+        } catch {
+          confirmBtn.disabled = false;
+          showToast('Network error — post not deleted', 'err');
+        }
+      };
     };
   }
 }
@@ -689,5 +1113,7 @@ function bindPeopleStep() {
 
 /* ================================== boot ================================== */
 const existing = loadSession();
-if (existing && existing.username) renderOnboarding(1);
-else renderAuth();
+if (existing && existing.username) {
+  // Deep link (e.g. refresh on #/post/:id) wins over the onboarding sequence
+  if (!(location.hash && routeFromLocation(false))) renderOnboarding(1);
+} else renderAuth();

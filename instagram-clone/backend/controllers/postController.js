@@ -44,6 +44,41 @@ export const createPost = async (req, res, next) => {
   }
 };
 
+// @desc    Update a post (caption)
+// @route   PUT /api/posts/:id
+// @access  Private (owner only)
+export const updatePost = async (req, res, next) => {
+  try {
+    const post = await Post.findById(req.params.id);
+
+    if (!post) {
+      return res.status(404).json({ success: false, message: 'Post not found' });
+    }
+
+    // Check post ownership
+    if (post.user.toString() !== req.user.id) {
+      return res.status(401).json({ success: false, message: 'User not authorized to edit this post' });
+    }
+
+    const { caption } = req.body;
+    if (typeof caption !== 'string' || !caption.trim()) {
+      return res.status(400).json({ success: false, message: 'Caption is required' });
+    }
+    if (caption.length > 2200) {
+      return res.status(400).json({ success: false, message: 'Caption cannot exceed 2200 characters' });
+    }
+
+    post.caption = caption.trim();
+    await post.save();
+
+    const populatedPost = await Post.findById(post._id).populate('user', 'username avatar fullName isVerified');
+
+    res.json({ success: true, message: 'Post updated successfully', post: populatedPost });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // @desc    Delete a post
 // @route   DELETE /api/posts/:id
 // @access  Private
