@@ -693,6 +693,7 @@ async function renderPostDetail(postId, push = true) {
             <button id="pd-like" class="pd-like ${liked ? 'liked' : ''}" aria-label="Like post" aria-pressed="${liked}">
               ${icons.heart}<span id="pd-like-count">${(post.likes || []).length}</span>
             </button>
+            <button id="pd-likes-open" class="pd-likes-open link-btn small" aria-haspopup="dialog">Liked by</button>
             <span class="pd-comment-count">${icons.comment}<span id="pd-comment-count">${comments.length}</span></span>
           </div>
 
@@ -738,6 +739,61 @@ async function renderPostDetail(postId, push = true) {
     }
     likeBtn.disabled = false;
   };
+
+  /* LIKED-BY: modal list of users who liked this post */
+  const openLikersModal = async () => {
+    if (document.getElementById('lb-modal')) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.id = 'lb-modal';
+    overlay.innerHTML = `
+      <div class="modal lb-modal" role="dialog" aria-modal="true" aria-label="People who liked this post">
+        <div class="lb-head">
+          <h3>Likes</h3>
+          <button id="lb-close" class="link-btn" aria-label="Close likes list">✕</button>
+        </div>
+        <div class="lb-list" id="lb-list"><div class="lb-state">Loading…</div></div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const close = () => overlay.remove();
+    document.getElementById('lb-close').onclick = close;
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.addEventListener('keydown', function esc(e) {
+      if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
+    });
+    document.getElementById('lb-close').focus();
+    try {
+      const res = await fetch(`${API_URL}/posts/${postId}/likes`, { credentials: 'include' });
+      const data = await res.json();
+      const list = document.getElementById('lb-list');
+      if (!list) return; // closed before response arrived
+      if (!res.ok || !data.success) {
+        list.innerHTML = `<div class="lb-state">${escapeHtml(data.message || 'Could not load likes')}</div>`;
+        return;
+      }
+      if (!data.users.length) {
+        list.innerHTML = `<div class="lb-state">No likes yet — be the first! ❤️</div>`;
+        return;
+      }
+      list.innerHTML = data.users.map((u) => `
+        <div class="lb-user" data-username="${escapeHtml(u.username || '')}" role="link" tabindex="0" aria-label="View @${escapeHtml(u.username || '')} profile">
+          <img class="avatar sm" src="${u.avatar || logo1}" alt="" onerror="this.src='${logo1}'" />
+          <div class="lb-user-meta">
+            <strong class="lb-username">@${escapeHtml(u.username || 'unknown')}</strong>
+            <span class="lb-fullname">${escapeHtml(u.fullName || '')}</span>
+          </div>
+        </div>`).join('');
+      list.querySelectorAll('.lb-user[data-username]:not([data-username=""])').forEach((el) => {
+        const go = () => { close(); renderProfile(el.dataset.username); };
+        el.addEventListener('click', go);
+        el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } });
+      });
+    } catch {
+      const list = document.getElementById('lb-list');
+      if (list) list.innerHTML = `<div class="lb-state">Network error — could not load likes</div>`;
+    }
+  };
+  document.getElementById('pd-likes-open').onclick = openLikersModal;
 
   /* COMMENTS: add */
   const commentForm = document.getElementById('pd-comment-form');

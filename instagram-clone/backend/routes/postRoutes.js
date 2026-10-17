@@ -4,6 +4,7 @@ import {
   updatePost,
   deletePost,
   getSinglePost,
+  getPostLikers,
   toggleLikePost,
   getFeedPosts,
   getUserPosts,
@@ -20,6 +21,7 @@ router.get('/feed', protect, getFeedPosts);
 router.get('/saved', protect, getSavedPosts);
 router.get('/user/:username', protect, getUserPosts);
 router.get('/:id', protect, getSinglePost);
+router.get('/:id/likes', protect, getPostLikers);
 router.post('/like/:id', protect, toggleLikePost);
 router.post('/save/:id', protect, toggleSavePost);
 router.put('/:id', protect, updatePost);

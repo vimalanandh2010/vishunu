@@ -133,6 +133,29 @@ export const getSinglePost = async (req, res, next) => {
   }
 };
 
+// @desc    Get the users who liked a post (liked-by list)
+// @route   GET /api/posts/:id/likes
+// @access  Private
+export const getPostLikers = async (req, res, next) => {
+  try {
+    const post = await Post.findById(req.params.id).select('likes').populate({
+      path: 'likes',
+      select: 'username fullName avatar isVerified',
+      options: { sort: { createdAt: -1 } },
+    });
+
+    if (!post) {
+      return res.status(404).json({ success: false, message: 'Post not found' });
+    }
+
+    // populate() silently drops dangling refs to deleted users — the list
+    // simply shows who is still resolvable, no crash, no null entries.
+    res.json({ success: true, count: post.likes.length, users: post.likes });
+  } catch (error) {
+    next(error);
+  }
+};
+
 // @desc    Toggle like on a post
 // @route   POST /api/posts/like/:id
 // @access  Private
@@ -144,12 +167,11 @@ export const toggleLikePost = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Post not found' });
     }
 
-    const isLiked = post.likes.includes(req.user.id);
+    const isLiked = post.likes.some((id) => id.toString() === req.user.id);
 
     if (isLiked) {
-      // Unlike post
-      post.likes = post.likes.filter((id) => id.toString() !== req.user.id);
-      await post.save();
+      // Unlike post (atomic pull — idempotent, safe under concurrency)
+      await Post.updateOne({ _id: post._id }, { $pull: { likes: req.user.id } });
 
       // Delete notification
       await Notification.findOneAndDelete({
@@ -161,9 +183,15 @@ export const toggleLikePost = async (req, res, next) => {
 
       res.json({ success: true, message: 'Post unliked successfully', isLiked: false });
     } else {
-      // Like post
-      post.likes.push(req.user.id);
-      await post.save();
+      // Like post (atomic guarded push — a concurrent duplicate request matches
+      // the likes: { $ne } condition, modifies nothing, and is reported as liked)
+      const upd = await Post.updateOne(
+        { _id: post._id, likes: { $ne: req.user.id } },
+        { $push: { likes: req.user.id } }
+      );
+      if (upd.modifiedCount === 0) {
+        return res.json({ success: true, message: 'Post already liked', isLiked: true });
+      }
 
       // Create notification (if liking someone else's post)
       if (post.user.toString() !== req.user.id) {
