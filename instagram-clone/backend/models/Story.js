@@ -30,5 +30,8 @@ const storySchema = new mongoose.Schema(
   }
 );
 
+// Index for active stories retrieval
+storySchema.index({ user: 1, createdAt: 1 });
+
 const Story = mongoose.model('Story', storySchema);
 export default Story;

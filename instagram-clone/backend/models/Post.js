@@ -45,6 +45,9 @@ const postSchema = new mongoose.Schema(
   }
 );
 
+// Compound index for chronological timeline feed queries
+postSchema.index({ user: 1, createdAt: -1 });
+
 // Virtual for Comments on this post
 postSchema.virtual('commentsCount', {
   ref: 'Comment',

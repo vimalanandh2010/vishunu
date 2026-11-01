@@ -32,15 +32,18 @@ export const createStory = async (req, res, next) => {
 // @access  Private
 export const getActiveStories = async (req, res, next) => {
   try {
-    const user = await User.findById(req.user.id);
-    const followingUsers = [...user.following, req.user.id];
+    // Select only the following array — no need to load the full User document
+    const user = await User.findById(req.user.id).select('following').lean();
+    const followingUsers = [...(user?.following || []), req.user.id];
 
     // Find stories (since TTL is active, expired stories are auto-deleted by MongoDB)
     const stories = await Story.find({ user: { $in: followingUsers } })
       .populate('user', 'username avatar fullName')
-      .sort({ createdAt: 1 });
+      .sort({ createdAt: 1 })
+      .lean();
 
     // Group stories by user for easier client mapping
+    const currentUserId = req.user.id;
     const grouped = {};
     stories.forEach((story) => {
       const uId = story.user._id.toString();
@@ -48,13 +51,19 @@ export const getActiveStories = async (req, res, next) => {
         grouped[uId] = {
           user: story.user,
           stories: [],
+          hasUnviewed: false,
         };
+      }
+      const isViewed = (story.views || []).some((v) => v.toString() === currentUserId);
+      if (!isViewed) {
+        grouped[uId].hasUnviewed = true;
       }
       grouped[uId].stories.push({
         _id: story._id,
         mediaUrl: story.mediaUrl,
         mediaType: story.mediaType,
-        views: story.views,
+        viewsCount: (story.views || []).length,
+        isViewed,
         createdAt: story.createdAt,
       });
     });
@@ -75,12 +84,30 @@ export const markStoryAsViewed = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Story not found or expired' });
     }
 
-    if (!story.views.includes(req.user.id)) {
-      story.views.push(req.user.id);
-      await story.save();
-    }
+    await Story.updateOne({ _id: story._id }, { $addToSet: { views: req.user.id } });
 
     res.json({ success: true, message: 'Story marked as viewed' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Delete a story
+// @route   DELETE /api/stories/:id
+// @access  Private
+export const deleteStory = async (req, res, next) => {
+  try {
+    const story = await Story.findById(req.params.id);
+    if (!story) {
+      return res.status(404).json({ success: false, message: 'Story not found or expired' });
+    }
+
+    if (story.user.toString() !== req.user.id) {
+      return res.status(403).json({ success: false, message: 'Not authorized to delete this story' });
+    }
+
+    await story.deleteOne();
+    res.json({ success: true, message: 'Story deleted successfully' });
   } catch (error) {
     next(error);
   }

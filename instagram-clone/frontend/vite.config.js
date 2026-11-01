@@ -14,6 +14,11 @@ export default defineConfig({
         target: 'http://localhost:5000',
         changeOrigin: true,
       },
+      // Socket.io real-time engine
+      '/socket.io': {
+        target: 'http://localhost:5000',
+        ws: true,
+      },
     },
   },
 });

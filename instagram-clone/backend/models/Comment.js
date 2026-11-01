@@ -35,5 +35,11 @@ const commentSchema = new mongoose.Schema(
   }
 );
 
+// Add index for fast retrieval of comments by post
+commentSchema.index({ post: 1, createdAt: -1 });
+
+// Index for cascade-deleting replies when a parent comment is deleted
+commentSchema.index({ parent: 1 });
+
 const Comment = mongoose.model('Comment', commentSchema);
 export default Comment;

@@ -1,7 +1,11 @@
 import jwt from 'jsonwebtoken';
 
 const generateToken = (res, userId) => {
-  const token = jwt.sign({ id: userId }, process.env.JWT_SECRET || 'your_super_secret_jwt_key_here', {
+  if (!process.env.JWT_SECRET) {
+    throw new Error('JWT_SECRET environment variable is not set. Cannot issue tokens.');
+  }
+
+  const token = jwt.sign({ id: userId }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRE || '30d',
   });
 

@@ -1,2 +1,8 @@
+node_modules/
 server.log
 uploads/
+
+# Environment variables — never commit real secrets
+.env
+.env.local
+.env.production

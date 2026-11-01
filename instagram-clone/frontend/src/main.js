@@ -1,1175 +1,318 @@
-import './style.css'
-import logo1 from './assets/logo1.png'
-
-const API_URL = import.meta.env.VITE_API_URL || '/api';
-const SERVER_URL = 'http://localhost:3001'; // vlove Google-OAuth backend
-
-/* ============================ tiny state/router ============================ */
-// Screens: auth (signup/login tabs) → onboarding (profile → people → welcome) → home
-let mode = 'signup';
-let currentUser = null; // { _id, username, fullName, avatar, ... }
-
-function saveSession(user) { currentUser = user; sessionStorage.setItem('velove_user', JSON.stringify(user)); }
-function loadSession() {
-  try { currentUser = JSON.parse(sessionStorage.getItem('velove_user')); } catch { currentUser = null; }
-  return currentUser;
-}
-function clearSession() { currentUser = null; sessionStorage.removeItem('velove_user'); }
-
-// Legacy posts stored absolute Windows paths or absolute backend URLs as
-// mediaUrl; map both to /uploads so they resolve same-origin through the Vite
-// proxy (helmet CORP blocks cross-origin image renders), or null when
-// unrecoverable. Cloudinary https URLs pass through untouched.
-function mediaSrc(url) {
-  if (!url) return null;
-  const abs = url.match(/^https?:\/\/[^/]+\/uploads\/([^/?#]+)$/i);
-  if (abs) return `/uploads/${abs[1]}`;
-  if (/^[a-zA-Z]:\\/.test(url)) {
-    const m = url.match(/uploads[/\\]([^/\\]+)$/);
-    return m ? `/uploads/${encodeURIComponent(m[1])}` : null;
-  }
-  return url;
-}
-
-// Escape user-generated text before injecting into innerHTML (XSS guard).
-function escapeHtml(s) {
-  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
-  }[c]));
-}
-
-function timeAgo(dateStr) {
-  if (!dateStr) return '';
-  const s = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
-  if (s < 60) return 'just now';
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 7) return `${d}d ago`;
-  return new Date(dateStr).toLocaleDateString();
-}
-
-function showToast(msg, type = 'ok') {
-  let box = document.getElementById('toasts');
-  if (!box) {
-    box = document.createElement('div');
-    box.id = 'toasts';
-    document.body.appendChild(box);
-  }
-  const t = document.createElement('div');
-  t.className = `toast ${type}`;
-  t.textContent = msg;
-  box.appendChild(t);
-  setTimeout(() => { t.classList.add('hide'); setTimeout(() => t.remove(), 260); }, 2600);
-}
-
-/* ============================ history/hash router ========================= */
-// Screens push hash entries so the browser Back button walks the same trail.
-function pushHash(hash) {
-  try {
-    history.pushState({ velove: (history.state?.velove || 0) + 1 }, '', hash);
-  } catch { /* ignore */ }
-}
-
-function goBack(fallback) {
-  if ((history.state?.velove || 0) > 0) history.back();
-  else fallback();
-}
-
-function clearHash() {
-  try { history.replaceState({ velove: 0 }, '', location.pathname); } catch { /* ignore */ }
-}
-
-// Returns true when the current hash matched a route and rendered it.
-function routeFromLocation(fallbackHome = true) {
-  if (!loadSession()?.username) return false;
-  const h = location.hash;
-  const mPost = h.match(/^#\/post\/([a-f0-9]{24})$/i);
-  if (mPost) { renderPostDetail(mPost[1], false); return true; }
-  const mProf = h.match(/^#\/profile\/([^/]+)$/);
-  if (mProf) { renderProfile(decodeURIComponent(mProf[1]), false); return true; }
-  if (h === '' || h === '#/home') {
-    if (fallbackHome) { renderHome(); return true; }
-    return false;
-  }
-  return false;
-}
-
-window.addEventListener('hashchange', () => routeFromLocation(true));
-
-/* ================================= markup ================================= */
-const googleSvg = `
-  <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-    <path d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z" fill="#4285F4"/>
-    <path d="M9.003 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.96v2.332C2.44 15.983 5.485 18 9.003 18z" fill="#34A853"/>
-    <path d="M3.964 10.71c-.18-.54-.282-1.117-.282-1.71s.102-1.17.282-1.71V4.958H.957C.347 6.173 0 7.548 0 9.001c0 1.452.348 2.827.957 4.041l3.007-2.332z" fill="#FBBC05"/>
-    <path d="M9.003 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.464.891 11.426 0 9.003 0 5.485 0 2.44 2.017.96 4.958L3.967 7.29c.708-2.127 2.692-3.71 5.036-3.71z" fill="#EA4335"/>
-  </svg>`;
-
-const eyeSvg = `<svg class="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M1 12s4-7.5 11-7.5S23 12 23 12s-4 7.5-11 7.5S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>`;
-const eyeOffSvg = `<svg class="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M17.94 17.94A10.5 10.5 0 0 1 12 19.5C5 19.5 1 12 1 12a19 19 0 0 1 5.06-5.94M9.9 4.24A9.5 9.5 0 0 1 12 4.5c7 0 11 7.5 11 7.5a19 19 0 0 1-2.16 3.19"/><path d="M14.12 14.12A3 3 0 1 1 9.88 9.88"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
-
-const icons = {
-  users: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>`,
-  image: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>`,
-  heart: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>`,
-  home: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></svg>`,
-  camera: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>`,
-  plus: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/></svg>`,
-  search: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>`,
-  chevron: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/></svg>`,
-  comment: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>`,
-};
-
-const features = [
-  { icon: 'users', title: 'Connect', text: 'with friends worldwide' },
-  { icon: 'image', title: 'Share', text: 'your moments' },
-  { icon: 'heart', title: 'Discover', text: 'amazing stories' },
-];
-
-function stepperHTML(step) {
-  // step: 1=Profile Setup 2=Find People 3=Get Started
-  const items = ['Profile Setup', 'Find People', 'Get Started'];
-  return `<div class="stepper">
-    ${items.map((label, i) => {
-      const n = i + 1;
-      const state = n < step ? 'done' : n === step ? 'active' : 'todo';
-      const inner = state === 'done' ? '✓' : n;
-      return `
-      <div class="step ${state}">
-        <div class="step-bubble">${inner}</div>
-        <div class="step-label">${label}</div>
-      </div>
-      ${n < items.length ? `<div class="step-line ${n < step ? 'filled' : ''}"></div>` : ''}`;
-    }).join('')}
-  </div>`;
-}
-
-const peopleRow = (u) => `
-  <div class="person" data-id="${u._id}">
-    <img class="avatar" src="${u.avatar}" alt="" onerror="this.src='${logo1}'" />
-    <div class="person-info">
-      <strong>${u.fullName}</strong>
-      <span>@${u.username}</span>
-      <small>${u.followersCount != null ? 'Followed by ' + u.followersCount + ' people' : ''}</small>
-    </div>
-    <button class="follow-btn ${u.isFollowing ? 'following' : ''}" data-id="${u._id}" data-username="${u.username}">
-      ${u.isFollowing ? 'Following' : 'Follow'}
-    </button>
-  </div>`;
+import './style.css';
+import { getSessionUser, loadSession, clearSession, isAuthenticated } from './state/session.js';
+import { getStoredTheme, applyTheme } from './state/theme.js';
+import { pushHash, replaceHash, clearHash, goBack, initRouter } from './router.js';
+import { initSocket, disconnectSocket } from './services/socket.js';
+import { renderAuth } from './views/authView.js';
+import { renderOnboarding } from './views/onboardingView.js';
+import { renderHome } from './views/homeView.js';
+import { renderProfile } from './views/profileView.js';
+import { renderPostDetail } from './views/postDetailView.js';
+import { renderMessages } from './views/messagesView.js';
+import { renderChatInfo } from './views/chatInfoView.js';
+import { renderResetPassword } from './views/resetPasswordView.js';
+import { renderEmailVerify } from './views/emailVerifyView.js';
+import { renderRandomConnect } from './views/randomConnectView.js';
+import { renderRandomTextChat } from './views/randomTextChatView.js';
+import { renderRandomVideoChat } from './views/randomVideoChatView.js';
+import { renderSavedView } from './views/savedView.js';
 
 const app = document.querySelector('#app');
 
-/* ================================ screen: auth ============================ */
-function renderAuth() {
-  app.innerHTML = `
-  <div class="page">
-    <aside class="hero">
-      <div class="hero-inner">
-        <img src="${logo1}" alt="VELOVE logo" class="hero-logo" />
-        <p class="hero-tagline">Connecting hearts, creating stories.</p>
-        <ul class="features">
-          ${features.map((f) => `
-            <li class="feature">
-              <span class="feature-icon">${icons[f.icon]}</span>
-              <span><strong>${f.title}</strong><small>${f.text}</small></span>
-            </li>`).join('')}
-        </ul>
-      </div>
-    </aside>
+/**
+ * Central application view orchestrator.
+ */
+function navigate(viewName, params = {}) {
+  const user = getSessionUser();
 
-    <main class="auth-wrap">
-      <section class="card">
-        <div class="brand">
-          <img src="${logo1}" alt="VELOVE logo" class="brand-logo" />
-          <h1 class="brand-name">VELOVE</h1>
-          <p class="brand-sub">Share Moments • Connect People • Explore Together</p>
-        </div>
-
-        <div class="tabs" role="tablist">
-          <button class="tab" data-mode="signup" type="button">Sign Up</button>
-          <button class="tab" data-mode="login" type="button">Log In</button>
-        </div>
-
-        <form id="signup-form" class="form ${mode !== 'signup' ? 'hidden' : ''}" novalidate>
-          <h2 class="form-title">Create Your Account</h2>
-
-          <div class="field"><span class="field-icon">${icons.users}</span>
-            <input id="su-name" type="text" placeholder="Full Name" autocomplete="name" required /></div>
-
-          <div class="field"><span class="field-icon">@</span>
-            <input id="su-username" type="text" placeholder="Username" autocomplete="username" required />
-            <span class="field-check" id="username-check"></span></div>
-
-          <div class="field"><span class="field-icon">✉</span>
-            <input id="su-email" type="email" placeholder="Email" autocomplete="email" required /></div>
-
-          <div class="field"><span class="field-icon">🔒</span>
-            <input id="su-password" type="password" placeholder="Password" autocomplete="new-password" required />
-            <button type="button" class="toggle-pw" data-target="su-password" aria-label="Show password">${eyeSvg}</button></div>
-
-          <div class="field"><span class="field-icon">🔒</span>
-            <input id="su-confirm" type="password" placeholder="Confirm Password" autocomplete="new-password" required />
-            <button type="button" class="toggle-pw" data-target="su-confirm" aria-label="Show password">${eyeSvg}</button></div>
-          <p class="hint" id="confirm-hint"></p>
-
-          <label class="agree">
-            <input type="checkbox" id="su-agree" />
-            <span>I agree to the <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a></span>
-          </label>
-
-          <button type="submit" class="btn-gradient">Sign Up</button>
-
-          <div class="divider"><span>OR</span></div>
-          <button type="button" class="btn-google" id="google-btn">${googleSvg} Continue with Google</button>
-          <p class="switch">Already have an account? <a href="#" data-switch="login">Log in</a></p>
-        </form>
-
-        <form id="login-form" class="form ${mode !== 'login' ? 'hidden' : ''}" novalidate>
-          <h2 class="form-title">Welcome Back</h2>
-          <div class="field"><span class="field-icon">✉</span>
-            <input id="li-id" type="text" placeholder="Email or Username" autocomplete="username" required /></div>
-          <div class="field"><span class="field-icon">🔒</span>
-            <input id="li-password" type="password" placeholder="Password" autocomplete="current-password" required />
-            <button type="button" class="toggle-pw" data-target="li-password" aria-label="Show password">${eyeSvg}</button></div>
-          <p class="forgot"><a href="#">Forgot password?</a></p>
-          <button type="submit" class="btn-gradient">Log In</button>
-          <div class="divider"><span>OR</span></div>
-          <button type="button" class="btn-google" id="google-btn-login">${googleSvg} Continue with Google</button>
-          <p class="switch">Don't have an account? <a href="#" data-switch="signup">Sign up</a></p>
-        </form>
-
-        <p class="msg" id="msg"></p>
-      </section>
-    </main>
-  </div>`;
-  bindAuth();
-}
-
-/* ============================= screen: onboarding ========================= */
-function renderOnboarding(step) {
-  if (step === 1) {
-    app.innerHTML = `
-    <div class="page onb-page">
-      <main class="auth-wrap"><section class="card onb-card">
-        ${stepperHTML(1)}
-        <h2 class="onb-title">Complete Your Profile</h2>
-        <p class="onb-sub">Make your profile yours ✨</p>
-
-        <div class="avatar-ring">
-          <img id="ob-avatar-img" class="ob-avatar" src="${logo1}" alt="avatar" />
-          <label class="change-photo" for="ob-avatar">
-            ${icons.camera} <span>Change Photo</span>
-            <input id="ob-avatar" type="file" accept="image/*" hidden />
-          </label>
-        </div>
-
-        <label class="ob-label" for="ob-name">Full Name</label>
-        <input id="ob-name" class="ob-input" type="text" value="${currentUser?.fullName || ''}" />
-
-        <label class="ob-label" for="ob-username">Username</label>
-        <div class="ob-user-wrap">
-          <input id="ob-username" class="ob-input" type="text" value="${currentUser?.username || ''}" />
-          <span class="ob-avail" id="ob-avail"></span>
-        </div>
-
-        <label class="ob-label" for="ob-bio">Bio</label>
-        <textarea id="ob-bio" class="ob-textarea" maxlength="150" rows="3" placeholder="Tell your story…"></textarea>
-        <div class="char-count"><span id="ob-bio-count">0</span>/150</div>
-
-        <p class="msg" id="ob-msg"></p>
-        <button id="ob-continue" class="btn-gradient btn-wide">Continue →</button>
-      </section></main>
-    </div>`;
-    bindProfileStep();
-  }
-
-  if (step === 2) {
-    app.innerHTML = `
-    <div class="page onb-page">
-      <main class="auth-wrap"><section class="card onb-card">
-        ${stepperHTML(2)}
-        <h2 class="onb-title">Find People to Follow</h2>
-        <p class="onb-sub">Follow people and build your VELOVE feed</p>
-
-        <div class="search-box">
-          <span class="search-ic">${icons.search}</span>
-          <input id="people-search" type="text" placeholder="Search people, username..." />
-        </div>
-
-        <div class="people-tabs">
-          <button class="ptab active" data-tab="suggested">Suggested</button>
-          <span class="see-all" id="refresh-people">See All</span>
-        </div>
-
-        <div class="people-list" id="people-list">
-          <div class="people-loading">Loading people…</div>
-        </div>
-
-        <button id="ob-continue" class="btn-gradient btn-wide">Continue →</button>
-        <p class="skip" id="skip-people">Skip for now</p>
-      </section></main>
-    </div>`;
-    bindPeopleStep();
-  }
-
-  if (step === 3) {
-    app.innerHTML = `
-    <div class="page onb-page">
-      <main class="auth-wrap"><section class="card onb-card welcome-card">
-        ${stepperHTML(3)}
-        <div class="welcome-blob">
-          <img class="welcome-avatar" src="${currentUser?.avatar || logo1}" alt="avatar" onerror="this.src='${logo1}'" />
-          <span class="w-deco w-heart">${icons.heart}</span>
-          <span class="w-deco w-cam">${icons.camera}</span>
-          <span class="w-verified">✓</span>
-        </div>
-        <h2 class="onb-title">You're All Set! 🎉</h2>
-        <p class="onb-sub">Welcome to VELOVE, <strong>${currentUser?.fullName || currentUser?.username}</strong>!</p>
-        <p class="welcome-copy">Start exploring, sharing and connecting with amazing people.</p>
-
-        <div class="welcome-actions">
-          <button class="w-action" id="go-feed">
-            <span class="w-ic pink">${icons.home}</span>
-            <span class="w-txt"><strong>Explore Feed</strong><small>See posts from people you follow</small></span>
-            <span class="w-chev">${icons.chevron}</span>
-          </button>
-          <button class="w-action" id="go-people">
-            <span class="w-ic violet">${icons.users}</span>
-            <span class="w-txt"><strong>Find More People</strong><small>Discover interesting creators</small></span>
-            <span class="w-chev">${icons.chevron}</span>
-          </button>
-          <button class="w-action" id="go-post">
-            <span class="w-ic orange">${icons.plus}</span>
-            <span class="w-txt"><strong>Create Your First Post</strong><small>Share your first moment</small></span>
-            <span class="w-chev">${icons.chevron}</span>
-          </button>
-        </div>
-
-        <button id="ob-continue" class="btn-gradient btn-wide">Go to Home →</button>
-      </section></main>
-    </div>`;
-    document.getElementById('go-feed').onclick = () => renderHome();
-    document.getElementById('go-people').onclick = () => renderOnboarding(2);
-    document.getElementById('go-post').onclick = () => renderHome(true);
-    document.getElementById('ob-continue').onclick = () => renderHome();
-  }
-}
-
-/* ================================ screen: home ============================ */
-async function renderHome(openComposer = false) {
-  app.innerHTML = `
-  <div class="page onb-page">
-    <main class="auth-wrap"><section class="card home-card">
-      <div class="home-top">
-        <img src="${logo1}" class="home-logo" alt="VELOVE" />
-        <h2 class="home-title">Home</h2>
-        <img class="avatar home-me" id="home-me" src="${currentUser?.avatar || logo1}" alt="me" onerror="this.src='${logo1}'" />
-      </div>
-
-      ${openComposer ? `
-      <div class="composer">
-        <textarea id="post-caption" class="ob-textarea" rows="2" placeholder="Share your first moment…"></textarea>
-        <div class="composer-row">
-          <label class="change-photo small" for="post-file">${icons.camera} <span>Photo</span>
-            <input id="post-file" type="file" accept="image/*,video/*" hidden /></label>
-          <button id="post-submit" class="btn-gradient btn-small">Post</button>
-        </div>
-        <p class="msg" id="post-msg"></p>
-      </div>` : ''}
-
-      <h3 class="feed-head">Explore Feed</h3>
-      <div id="feed"><div class="people-loading">Loading feed…</div></div>
-      <button id="logout" class="link-btn">Log out</button>
-    </section></main>
-  </div>`;
-
-  document.getElementById('logout').onclick = async () => {
-    await fetch(`${API_URL}/auth/logout`, { method: 'POST', credentials: 'include' }).catch(() => {});
-    clearSession();
+  // Route guard: Non-authenticated users must be shown the auth screen
+  // Exception: reset-password and verify-email are public deep-link flows
+  const publicViews = ['auth', 'resetPassword', 'verifyEmail'];
+  if (!user && !publicViews.includes(viewName)) {
     clearHash();
-    mode = 'signup';
-    renderAuth();
-  };
-
-  // READ: feed
-  try {
-    const res = await fetch(`${API_URL}/posts/feed`, { credentials: 'include' });
-    const data = await res.json();
-    const feed = document.getElementById('feed');
-    if (data.posts?.length) {
-      feed.innerHTML = data.posts.map((p) => {
-        const src = mediaSrc(p.mediaUrl);
-        return `
-        <div class="feed-post" data-id="${p._id}">
-          <div class="feed-head-row">
-            <img class="avatar" src="${p.user?.avatar || logo1}" onerror="this.src='${logo1}'" />
-            <strong>${escapeHtml(p.user?.username || 'unknown')}</strong>
-          </div>
-          ${src ? (p.mediaType === 'video'
-            ? `<video class="feed-media" src="${src}" controls></video>`
-            : `<img class="feed-media" src="${src}" onerror="this.style.display='none'" />`)
-          : ''}
-          <div class="feed-caption"><strong data-username="${escapeHtml(p.user?.username || '')}">${escapeHtml(p.user?.username)}</strong> ${escapeHtml(p.caption || '')}</div>
-        </div>`;
-      }).join('');
-    } else {
-      feed.innerHTML = `<div class="empty">No posts yet — follow people or create the first post!</div>`;
-    }
-  } catch {
-    document.getElementById('feed').innerHTML = `<div class="empty">Couldn't load feed.</div>`;
-  }
-
-  // Navigate to profiles / post detail
-  document.getElementById('home-me')?.addEventListener('click', () => renderProfile(currentUser?.username));
-  document.querySelectorAll('.feed-caption strong[data-username]').forEach((el) => {
-    el.addEventListener('click', () => el.dataset.username && renderProfile(el.dataset.username));
-  });
-  document.querySelectorAll('.feed-post[data-id]').forEach((el) => {
-    el.querySelector('.feed-media')?.addEventListener('click', () => renderPostDetail(el.dataset.id));
-  });
-
-  if (openComposer) {
-    const fileInput = document.getElementById('post-file');
-    document.getElementById('post-submit').onclick = async () => {
-      const msg = document.getElementById('post-msg');
-      const caption = document.getElementById('post-caption').value.trim();
-      if (!fileInput.files[0]) { msg.textContent = 'Choose a photo first.'; msg.className = 'msg err'; return; }
-      const fd = new FormData();
-      fd.append('media', fileInput.files[0]);
-      fd.append('caption', caption);
-      const res = await fetch(`${API_URL}/posts`, { method: 'POST', credentials: 'include', body: fd });
-      const data = await res.json();
-      if (res.ok && data.success) { msg.textContent = 'Posted! ✓'; msg.className = 'msg ok'; setTimeout(() => renderHome(), 700); }
-      else { msg.textContent = data.message || 'Post failed'; msg.className = 'msg err'; }
-    };
-  }
-}
-
-/* ============================== screen: profile =========================== */
-async function renderProfile(username, push = true) {
-  if (push) pushHash(`#/profile/${encodeURIComponent(username || '')}`);
-  app.innerHTML = `
-  <div class="page onb-page">
-    <main class="auth-wrap"><section class="card profile-card">
-      <div class="home-top">
-        <button id="pf-back" class="link-btn back">← Home</button>
-        <h2 class="home-title">Profile</h2>
-        <span class="home-top-spacer"></span>
-      </div>
-      <div class="people-loading">Loading profile…</div>
-    </section></main>
-  </div>`;
-  document.getElementById('pf-back').onclick = () => renderHome();
-
-  let profile, userPosts;
-  try {
-    const [pRes, postsRes] = await Promise.all([
-      fetch(`${API_URL}/user/profile/${encodeURIComponent(username)}`, { credentials: 'include' }),
-      fetch(`${API_URL}/posts/user/${encodeURIComponent(username)}`, { credentials: 'include' }),
-    ]);
-    const pData = await pRes.json();
-    if (!pRes.ok || !pData.success) throw new Error(pData.message || 'Profile not found');
-    profile = pData.profile;
-    const postsData = await postsRes.json().catch(() => ({}));
-    userPosts = postsData.posts || [];
-  } catch (e) {
-    document.querySelector('.profile-card .people-loading').outerHTML =
-      `<div class="empty">${e.message || "Couldn't load profile."}</div>`;
+    renderAuth(app, {
+      onAuthSuccess: (authedUser, isNewSignup) => {
+        if (isNewSignup) {
+          navigate('onboarding', { step: 1 });
+        } else {
+          clearHash();
+          navigate('home');
+        }
+      },
+    });
     return;
   }
 
-  const isMe = currentUser && (profile._id === currentUser._id || profile.username === currentUser.username);
-  const following = !!profile.isFollowing;
-  const web = profile.website
-    ? /^https?:\/\//i.test(profile.website) ? profile.website : `https://${profile.website}`
-    : null;
+  switch (viewName) {
+    case 'auth': {
+      clearHash();
+      renderAuth(app, {
+        onAuthSuccess: (authedUser, isNewSignup) => {
+          if (isNewSignup) {
+            navigate('onboarding', { step: 1 });
+          } else {
+            clearHash();
+            navigate('home');
+          }
+        },
+      });
+      break;
+    }
 
-  app.innerHTML = `
-  <div class="page onb-page">
-    <main class="auth-wrap"><section class="card profile-card">
-      <div class="home-top">
-        <button id="pf-back" class="link-btn back">← Home</button>
-        <h2 class="home-title">Profile</h2>
-        <span class="home-top-spacer"></span>
-      </div>
+    case 'onboarding': {
+      const step = params.step || 1;
+      pushHash(`#/onboarding/${step}`);
+      renderOnboarding(app, step, {
+        onNavigate: (nextStep) => navigate('onboarding', { step: nextStep }),
+        onFinish: (openComposer = false) => {
+          clearHash();
+          navigate('home', { openComposer });
+        },
+      });
+      break;
+    }
 
-      <div class="pf-head">
-        <img class="avatar pf-avatar" src="${profile.avatar || logo1}" alt="${profile.username}" onerror="this.src='${logo1}'" />
-        <div class="pf-id">
-          <div class="pf-name">${escapeHtml(profile.fullName || profile.username)}
-            ${profile.isVerified ? '<span class="pf-verified" title="Verified">✔️</span>' : ''}</div>
-          <div class="pf-username">@${escapeHtml(profile.username)}</div>
-        </div>
-      </div>
-
-      ${profile.bio ? `<p class="pf-bio">${escapeHtml(profile.bio)}</p>` : ''}
-      ${web ? `<a class="pf-web" href="${web}" target="_blank" rel="noopener">🔗 ${profile.website}</a>` : ''}
-
-      <div class="pf-stats">
-        <div class="pf-stat"><strong id="pf-posts">${profile.postsCount ?? userPosts.length}</strong><span>posts</span></div>
-        <div class="pf-stat"><strong id="pf-followers">${profile.followersCount}</strong><span>followers</span></div>
-        <div class="pf-stat"><strong id="pf-following">${profile.followingCount}</strong><span>following</span></div>
-      </div>
-
-      ${isMe
-        ? `<button id="pf-edit" class="btn-gradient btn-wide">Edit Profile</button>`
-        : `<button id="pf-follow" class="pf-follow ${following ? 'on' : ''}" data-id="${profile._id}">${following ? 'Following ✓' : 'Follow'}</button>`}
-
-      <h3 class="feed-head">Posts</h3>
-      ${userPosts.length
-        ? `<div class="pf-grid">${userPosts.map((p) => {
-            const src = mediaSrc(p.mediaUrl);
-            return src
-              ? (p.mediaType === 'video'
-                ? `<div class="pf-cell" data-id="${p._id}" title="Open post"><video src="${src}" muted></video></div>`
-                : `<div class="pf-cell" data-id="${p._id}" title="Open post"><img src="${src}" alt="${escapeHtml(p.caption || 'post')}" onerror="this.parentElement.classList.add('broken')" /></div>`)
-              : `<div class="pf-cell" data-id="${p._id}" title="Open post"><div class="pf-cap">${escapeHtml(p.caption || '')}</div></div>`;
-          }).join('')}</div>`
-        : `<div class="empty">No posts yet 📷</div>`}
-    </section></main>
-  </div>`;
-
-  document.getElementById('pf-back').onclick = () => goBack(() => { clearHash(); renderHome(); });
-  document.querySelectorAll('.pf-cell[data-id]').forEach((cell) => {
-    cell.addEventListener('click', () => renderPostDetail(cell.dataset.id));
-  });
-  const editBtn = document.getElementById('pf-edit');
-  if (editBtn) editBtn.onclick = () => renderOnboarding(1);
-
-  const followBtn = document.getElementById('pf-follow');
-  if (followBtn) {
-    followBtn.onclick = async () => {
-      followBtn.disabled = true;
-      try {
-        const res = await fetch(`${API_URL}/user/follow/${followBtn.dataset.id}`, {
-          method: 'POST', credentials: 'include',
-        });
-        const data = await res.json();
-        if (res.ok && data.success) {
-          const nowFollowing = data.isFollowing ?? !following;
-          followBtn.textContent = nowFollowing ? 'Following ✓' : 'Follow';
-          followBtn.classList.toggle('on', nowFollowing);
-          const fc = document.getElementById('pf-followers');
-          if (fc) fc.textContent = parseInt(fc.textContent, 10) + (nowFollowing ? 1 : -1);
-        } else {
-          followBtn.textContent = data.message || 'Failed';
-        }
-      } catch {
-        followBtn.textContent = 'Network error';
+    case 'profile': {
+      const username = params.username || user?.username;
+      if (params.replaceHistory) {
+        replaceHash(`#/profile/${encodeURIComponent(username || '')}`);
+      } else if (params.push !== false) {
+        pushHash(`#/profile/${encodeURIComponent(username || '')}`);
       }
-      followBtn.disabled = false;
-    };
+      renderProfile(app, username, {
+        onNavigate: (route, routeParams) => navigate(route, routeParams),
+        onGoBack: () => goBack(() => { clearHash(); navigate('home'); }),
+      });
+      break;
+    }
+
+    case 'postDetail': {
+      const postId = params.postId;
+      if (params.push !== false) {
+        pushHash(`#/post/${postId}`);
+      }
+      renderPostDetail(app, postId, {
+        onNavigate: (route, routeParams) => navigate(route, routeParams),
+        onGoBack: () => goBack(() => { clearHash(); navigate('home'); }),
+      });
+      break;
+    }
+
+    case 'messages': {
+      const convId = params.conversationId;
+      if (params.push !== false) {
+        pushHash(convId ? `#/messages/${convId}` : '#/messages');
+      }
+      renderMessages(app, {
+        initialConversationId: convId,
+        onNavigate: (route, routeParams) => navigate(route, routeParams),
+        onGoBack: () => goBack(() => { clearHash(); navigate('home'); }),
+      });
+      break;
+    }
+
+    case 'chatInfo': {
+      const targetUserId = params.targetUserId || params.userId;
+      const convId = params.conversationId;
+      if (params.push !== false) {
+        pushHash(convId ? `#/messages/info/${targetUserId}/${convId}` : `#/messages/info/${targetUserId}`);
+      }
+      renderChatInfo(app, {
+        targetUserId,
+        conversationId: convId,
+        onNavigate: (route, routeParams) => navigate(route, routeParams),
+        onGoBack: () => goBack(() => {
+          if (convId) navigate('messages', { conversationId: convId });
+          else navigate('messages');
+        }),
+      });
+      break;
+    }
+
+    case 'resetPassword': {
+      const { token } = params;
+      replaceHash(`#/reset-password/${token}`);
+      renderResetPassword(app, token, {
+        onSuccess: (mode) => {
+          clearHash();
+          // mode === 'forgot' means user wants to re-request a link
+          navigate('auth');
+        },
+      });
+      break;
+    }
+
+    case 'verifyEmail': {
+      const { token: vToken } = params;
+      replaceHash(`#/verify-email/${vToken}`);
+      renderEmailVerify(app, vToken, {
+        onSuccess: () => {
+          clearHash();
+          if (isAuthenticated()) {
+            navigate('home');
+          } else {
+            navigate('auth');
+          }
+        },
+      });
+      break;
+    }
+
+    case 'random-connect': {
+      pushHash('#/random-connect');
+      renderRandomConnect(app, {
+        autoMatchMode: params.autoMatchMode,
+        onNavigate: (route, routeParams) => navigate(route, routeParams),
+      });
+      break;
+    }
+
+    case 'randomTextChat': {
+      pushHash('#/random-chat');
+      renderRandomTextChat(app, {
+        sessionId: params.sessionId || params.matchId,
+        strangerTempName: params.strangerTempName,
+        myTempName: params.myTempName,
+        onNavigate: (route, routeParams) => navigate(route, routeParams),
+      });
+      break;
+    }
+
+    case 'randomVideoChat': {
+      pushHash('#/random-video');
+      renderRandomVideoChat(app, {
+        sessionId: params.sessionId || params.matchId,
+        strangerTempName: params.strangerTempName,
+        myTempName: params.myTempName,
+        onNavigate: (route, routeParams) => navigate(route, routeParams),
+      });
+      break;
+    }
+
+    case 'saved': {
+      pushHash('#/saved');
+      renderSavedView(app, {
+        onNavigate: (route, routeParams) => navigate(route, routeParams),
+        onLogout: () => {
+          disconnectSocket();
+          navigate('auth');
+        },
+      });
+      break;
+    }
+
+    case 'home':
+    default: {
+      if (location.hash && location.hash !== '#/home' && location.hash !== '#/') {
+        clearHash();
+      }
+      renderHome(app, {
+        openComposer: Boolean(params.openComposer),
+        onNavigate: (route, routeParams) => navigate(route, routeParams),
+        onLogout: () => {
+          disconnectSocket();
+          clearSession();
+          clearHash();
+          navigate('auth');
+        },
+      });
+      break;
+    }
   }
 }
 
-/* ============================= screen: post detail ======================== */
-async function renderPostDetail(postId, push = true) {
-  if (!loadSession()?.username) return renderAuth();
-  if (push) pushHash(`#/post/${postId}`);
-
-  app.innerHTML = `
-  <div class="page onb-page">
-    <main class="auth-wrap"><section class="card post-card">
-      <div class="home-top">
-        <button id="pd-back" class="link-btn back">← Back</button>
-        <h2 class="home-title">Post</h2>
-        <span class="home-top-spacer"></span>
-      </div>
-      <div class="pd-body pd-loading">
-        <div class="pd-skeleton pd-sk-media"></div>
-        <div class="pd-info">
-          <div class="pd-skeleton pd-sk-line w60"></div>
-          <div class="pd-skeleton pd-sk-line w90"></div>
-          <div class="pd-skeleton pd-sk-line w80"></div>
-          <div class="pd-skeleton pd-sk-line w40"></div>
-        </div>
-      </div>
-    </section></main>
-  </div>`;
-  document.getElementById('pd-back').onclick = () => goBack(() => { clearHash(); renderHome(); });
-
-  // READ: post + comments (+ author follow state when it's not my post)
-  let post, comments = [], authorProfile = null;
-  try {
-    const [pRes, cRes] = await Promise.all([
-      fetch(`${API_URL}/posts/${postId}`, { credentials: 'include' }),
-      fetch(`${API_URL}/comments/${postId}`, { credentials: 'include' }),
-    ]);
-    const pData = await pRes.json();
-    if (!pRes.ok || !pData.success) throw new Error(pData.message || 'Post not found');
-    post = pData.post;
-    const cData = await cRes.json().catch(() => ({}));
-    comments = cData.comments || [];
-
-    const isOwn = post.user?._id === currentUser?._id;
-    if (!isOwn && post.user?.username) {
-      const uRes = await fetch(`${API_URL}/user/profile/${encodeURIComponent(post.user.username)}`, { credentials: 'include' });
-      const uData = await uRes.json().catch(() => ({}));
-      if (uRes.ok && uData.success) authorProfile = uData.profile;
-    }
-  } catch {
-    app.innerHTML = `
-    <div class="page onb-page">
-      <main class="auth-wrap"><section class="card post-card">
-        <div class="home-top">
-          <button id="pd-back" class="link-btn back">← Back</button>
-          <h2 class="home-title">Post</h2>
-          <span class="home-top-spacer"></span>
-        </div>
-        <div class="pd-error empty">
-          <div class="pd-err-icon">🗑️</div>
-          <h3>Post unavailable</h3>
-          <p>This post is no longer available — it may have been deleted.</p>
-          <button id="pd-err-home" class="btn-gradient btn-wide">Back to Home</button>
-        </div>
-      </section></main>
-    </div>`;
-    document.getElementById('pd-back').onclick = () => { clearHash(); renderHome(); };
-    document.getElementById('pd-err-home').onclick = () => { clearHash(); renderHome(); };
+/**
+ * Handle incoming routes parsed from URL hash.
+ */
+function handleRoute(route) {
+  // Public flows — allow without auth
+  if (route.name === 'resetPassword') {
+    navigate('resetPassword', { token: route.params.token, push: false });
+    return;
+  }
+  if (route.name === 'verifyEmail') {
+    navigate('verifyEmail', { token: route.params.token, push: false });
     return;
   }
 
-  const author = post.user || {};
-  const isOwn = author._id === currentUser?._id;
-  const liked = (post.likes || []).some((id) => String(id._id || id) === currentUser?._id);
-  const src = mediaSrc(post.mediaUrl);
+  if (!isAuthenticated()) {
+    navigate('auth');
+    return;
+  }
 
-  const commentRow = (c) => {
-    const canDelete = c.user?._id === currentUser?._id || isOwn; // comment owner or post owner
-    return `
-    <div class="pd-comment" data-id="${c._id}">
-      <img class="avatar sm" src="${c.user?.avatar || logo1}" onerror="this.src='${logo1}'" />
-      <div class="pd-comment-body">
-        <div class="pd-c-top">
-          <strong class="pd-c-username" data-username="${escapeHtml(c.user?.username || '')}">@${escapeHtml(c.user?.username || 'unknown')}</strong>
-          <span class="pd-c-time">${timeAgo(c.createdAt)}</span>
-        </div>
-        <p class="pd-c-text">${escapeHtml(c.text)}</p>
-      </div>
-      ${canDelete ? `<button class="pd-c-del" data-id="${c._id}" title="Delete comment" aria-label="Delete comment">✕</button>` : ''}
-    </div>`;
-  };
-
-  app.innerHTML = `
-  <div class="page onb-page">
-    <main class="auth-wrap"><section class="card post-card">
-      <div class="home-top">
-        <button id="pd-back" class="link-btn back">← Back</button>
-        <h2 class="home-title">Post</h2>
-        <span class="home-top-spacer"></span>
-      </div>
-
-      <div class="pd-body">
-        <div class="pd-media ${src ? '' : 'pd-media-empty'}">
-          ${src ? (post.mediaType === 'video'
-            ? `<video class="pd-img" src="${src}" controls></video>`
-            : `<img class="pd-img" id="pd-image" src="${src}" alt="post media" onerror="this.parentElement.classList.add('pd-media-empty'); this.remove()" />`)
-          : `<div class="pd-cap-fallback">${escapeHtml(post.caption || 'No media')}</div>`}
-        </div>
-
-        <div class="pd-info">
-          <div class="pd-author">
-            <img class="avatar" src="${author.avatar || logo1}" onerror="this.src='${logo1}'" />
-            <div class="pd-author-meta">
-              <strong class="pd-username" data-username="${escapeHtml(author.username || '')}">@${escapeHtml(author.username || 'unknown')}</strong>
-              <span class="pd-time">${timeAgo(post.createdAt)}</span>
-            </div>
-            ${!isOwn && author.username ? `<button id="pd-follow" class="pf-follow pd-follow ${authorProfile?.isFollowing ? 'on' : ''}" data-id="${author._id}">${authorProfile?.isFollowing ? 'Following ✓' : 'Follow'}</button>` : ''}
-          </div>
-
-          <div class="pd-caption-box">
-            <div class="pd-caption" id="pd-caption">${post.caption ? escapeHtml(post.caption) : '<em class="pd-muted">No caption</em>'}</div>
-            ${isOwn ? `
-            <div class="pd-owner-actions">
-              <button id="pd-edit" class="link-btn small">Edit caption</button>
-              <button id="pd-delete" class="link-btn small danger">Delete post</button>
-            </div>` : ''}
-          </div>
-
-          <div class="pd-actions">
-            <button id="pd-like" class="pd-like ${liked ? 'liked' : ''}" aria-label="Like post" aria-pressed="${liked}">
-              ${icons.heart}<span id="pd-like-count">${(post.likes || []).length}</span>
-            </button>
-            <button id="pd-likes-open" class="pd-likes-open link-btn small" aria-haspopup="dialog">Liked by</button>
-            <span class="pd-comment-count">${icons.comment}<span id="pd-comment-count">${comments.length}</span></span>
-          </div>
-
-          <div class="pd-comments" id="pd-comments">
-            ${comments.length ? comments.map(commentRow).join('') : `<div class="empty" id="pd-no-comments">No comments yet — be the first!</div>`}
-          </div>
-
-          <form class="pd-comment-form" id="pd-comment-form">
-            <input id="pd-comment-input" type="text" maxlength="1000" placeholder="Add a comment…" autocomplete="off" />
-            <button type="submit" class="btn-gradient btn-small" id="pd-comment-submit">Post</button>
-          </form>
-        </div>
-      </div>
-    </section></main>
-  </div>`;
-
-  document.getElementById('pd-back').onclick = () => goBack(() => { clearHash(); renderHome(); });
-
-  const bindUsername = (el) => el?.addEventListener('click', () => el.dataset.username && renderProfile(el.dataset.username));
-  bindUsername(document.querySelector('.pd-username'));
-  document.querySelectorAll('.pd-c-username[data-username]').forEach(bindUsername);
-
-  /* LIKE: toggle with duplicate-guard (button disabled while in flight) */
-  const likeBtn = document.getElementById('pd-like');
-  const likeCount = document.getElementById('pd-like-count');
-  likeBtn.onclick = async () => {
-    if (likeBtn.disabled) return;
-    likeBtn.disabled = true;
-    try {
-      const res = await fetch(`${API_URL}/posts/like/${postId}`, { method: 'POST', credentials: 'include' });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        likeBtn.classList.toggle('liked', data.isLiked);
-        likeBtn.setAttribute('aria-pressed', String(!!data.isLiked));
-        likeCount.textContent = Math.max(0, parseInt(likeCount.textContent, 10) + (data.isLiked ? 1 : -1));
-        likeBtn.classList.add('pop');
-        setTimeout(() => likeBtn.classList.remove('pop'), 180);
-      } else {
-        showToast(data.message || 'Could not update like', 'err');
-      }
-    } catch {
-      showToast('Network error — like not saved', 'err');
-    }
-    likeBtn.disabled = false;
-  };
-
-  /* LIKED-BY: modal list of users who liked this post */
-  const openLikersModal = async () => {
-    if (document.getElementById('lb-modal')) return;
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.id = 'lb-modal';
-    overlay.innerHTML = `
-      <div class="modal lb-modal" role="dialog" aria-modal="true" aria-label="People who liked this post">
-        <div class="lb-head">
-          <h3>Likes</h3>
-          <button id="lb-close" class="link-btn" aria-label="Close likes list">✕</button>
-        </div>
-        <div class="lb-list" id="lb-list"><div class="lb-state">Loading…</div></div>
-      </div>`;
-    document.body.appendChild(overlay);
-    const close = () => overlay.remove();
-    document.getElementById('lb-close').onclick = close;
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-    document.addEventListener('keydown', function esc(e) {
-      if (e.key === 'Escape') { close(); document.removeEventListener('keydown', esc); }
-    });
-    document.getElementById('lb-close').focus();
-    try {
-      const res = await fetch(`${API_URL}/posts/${postId}/likes`, { credentials: 'include' });
-      const data = await res.json();
-      const list = document.getElementById('lb-list');
-      if (!list) return; // closed before response arrived
-      if (!res.ok || !data.success) {
-        list.innerHTML = `<div class="lb-state">${escapeHtml(data.message || 'Could not load likes')}</div>`;
-        return;
-      }
-      if (!data.users.length) {
-        list.innerHTML = `<div class="lb-state">No likes yet — be the first! ❤️</div>`;
-        return;
-      }
-      list.innerHTML = data.users.map((u) => `
-        <div class="lb-user" data-username="${escapeHtml(u.username || '')}" role="link" tabindex="0" aria-label="View @${escapeHtml(u.username || '')} profile">
-          <img class="avatar sm" src="${u.avatar || logo1}" alt="" onerror="this.src='${logo1}'" />
-          <div class="lb-user-meta">
-            <strong class="lb-username">@${escapeHtml(u.username || 'unknown')}</strong>
-            <span class="lb-fullname">${escapeHtml(u.fullName || '')}</span>
-          </div>
-        </div>`).join('');
-      list.querySelectorAll('.lb-user[data-username]:not([data-username=""])').forEach((el) => {
-        const go = () => { close(); renderProfile(el.dataset.username); };
-        el.addEventListener('click', go);
-        el.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } });
-      });
-    } catch {
-      const list = document.getElementById('lb-list');
-      if (list) list.innerHTML = `<div class="lb-state">Network error — could not load likes</div>`;
-    }
-  };
-  document.getElementById('pd-likes-open').onclick = openLikersModal;
-
-  /* COMMENTS: add */
-  const commentForm = document.getElementById('pd-comment-form');
-  const commentInput = document.getElementById('pd-comment-input');
-  const commentList = document.getElementById('pd-comments');
-  const commentCount = document.getElementById('pd-comment-count');
-  commentForm.onsubmit = async (e) => {
-    e.preventDefault();
-    const text = commentInput.value.trim();
-    if (!text) { showToast('Comment cannot be empty', 'err'); return; }
-    if (text.length > 1000) { showToast('Comment is too long (max 1000)', 'err'); return; }
-    const submitBtn = document.getElementById('pd-comment-submit');
-    submitBtn.disabled = true;
-    try {
-      const res = await fetch(`${API_URL}/comments/${postId}`, {
-        method: 'POST', credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        document.getElementById('pd-no-comments')?.remove();
-        commentList.insertAdjacentHTML('beforeend', commentRow(data.comment));
-        commentList.querySelectorAll('.pd-c-username[data-username]').forEach((el) => {
-          if (!el.dataset.bound) { el.dataset.bound = '1'; bindUsername(el); }
+  switch (route.name) {
+    case 'randomTextChat': {
+      // Restore from sessionStorage if browser was refreshed
+      const savedRc = JSON.parse(sessionStorage.getItem('velove_active_rc_session') || '{}');
+      if (savedRc.sessionId) {
+        navigate('randomTextChat', {
+          sessionId: savedRc.sessionId,
+          strangerTempName: savedRc.strangerTempName,
+          myTempName: savedRc.myTempName,
+          push: false,
         });
-        const delBtn = commentList.querySelector(`.pd-c-del[data-id="${data.comment._id}"]`);
-        if (delBtn) bindDeleteComment(delBtn);
-        commentCount.textContent = parseInt(commentCount.textContent, 10) + 1;
-        commentInput.value = '';
-        showToast('Comment added');
       } else {
-        showToast(data.errors?.[0]?.message || data.message || 'Could not add comment', 'err');
+        navigate('random-connect', { push: false });
       }
-    } catch {
-      showToast('Network error — comment not saved', 'err');
+      break;
     }
-    submitBtn.disabled = false;
-  };
-
-  /* COMMENTS: delete (authorized rows only) */
-  const bindDeleteComment = (btn) => {
-    if (!btn || btn.dataset.bound) return;
-    btn.dataset.bound = '1';
-    btn.onclick = async () => {
-      btn.disabled = true;
-      try {
-        const res = await fetch(`${API_URL}/comments/${btn.dataset.id}`, { method: 'DELETE', credentials: 'include' });
-        const data = await res.json();
-        if (res.ok && data.success) {
-          document.querySelector(`.pd-comment[data-id="${btn.dataset.id}"]`)?.remove();
-          commentCount.textContent = Math.max(0, parseInt(commentCount.textContent, 10) - 1);
-          if (!commentList.querySelector('.pd-comment')) {
-            commentList.innerHTML = `<div class="empty" id="pd-no-comments">No comments yet — be the first!</div>`;
-          }
-          showToast('Comment deleted');
-        } else {
-          btn.disabled = false;
-          showToast(data.message || 'Could not delete comment', 'err');
-        }
-      } catch {
-        btn.disabled = false;
-        showToast('Network error — comment not deleted', 'err');
-      }
-    };
-  };
-  commentList.querySelectorAll('.pd-c-del').forEach(bindDeleteComment);
-
-  /* FOLLOW author */
-  const followBtn = document.getElementById('pd-follow');
-  if (followBtn) {
-    followBtn.onclick = async () => {
-      followBtn.disabled = true;
-      const wasFollowing = followBtn.classList.contains('on');
-      try {
-        const res = await fetch(`${API_URL}/user/follow/${followBtn.dataset.id}`, { method: 'POST', credentials: 'include' });
-        const data = await res.json();
-        if (res.ok && data.success) {
-          const nowFollowing = data.isFollowing ?? !wasFollowing;
-          followBtn.textContent = nowFollowing ? 'Following ✓' : 'Follow';
-          followBtn.classList.toggle('on', nowFollowing);
-        } else {
-          showToast(data.message || 'Could not update follow', 'err');
-        }
-      } catch {
-        showToast('Network error — follow not saved', 'err');
-      }
-      followBtn.disabled = false;
-    };
-  }
-
-  /* OWNER: edit caption inline */
-  const editBtn = document.getElementById('pd-edit');
-  if (editBtn) {
-    editBtn.onclick = () => {
-      const box = document.querySelector('.pd-caption-box');
-      box.innerHTML = `
-        <textarea id="pd-caption-input" class="ob-textarea" rows="3" maxlength="2200">${escapeHtml(post.caption || '')}</textarea>
-        <div class="pd-owner-actions">
-          <button id="pd-save" class="btn-gradient btn-small">Save</button>
-          <button id="pd-cancel" class="link-btn small">Cancel</button>
-        </div>`;
-      document.getElementById('pd-caption-input').focus();
-      document.getElementById('pd-cancel').onclick = () => renderPostDetail(postId, false);
-      document.getElementById('pd-save').onclick = async () => {
-        const caption = document.getElementById('pd-caption-input').value.trim();
-        if (!caption) { showToast('Caption cannot be empty', 'err'); return; }
-        const saveBtn = document.getElementById('pd-save');
-        saveBtn.disabled = true;
-        try {
-          const res = await fetch(`${API_URL}/posts/${postId}`, {
-            method: 'PUT', credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ caption }),
-          });
-          const data = await res.json();
-          if (res.ok && data.success) {
-            post.caption = data.post.caption;
-            showToast('Caption updated');
-            renderPostDetail(postId, false);
-          } else {
-            saveBtn.disabled = false;
-            showToast(data.errors?.[0]?.message || data.message || 'Could not save caption', 'err');
-          }
-        } catch {
-          saveBtn.disabled = false;
-          showToast('Network error — caption not saved', 'err');
-        }
-      };
-    };
-  }
-
-  /* OWNER: delete post with confirmation dialog */
-  const deleteBtn = document.getElementById('pd-delete');
-  if (deleteBtn) {
-    deleteBtn.onclick = () => {
-      const overlay = document.createElement('div');
-      overlay.className = 'modal-overlay';
-      overlay.id = 'pd-modal';
-      overlay.innerHTML = `
-        <div class="modal" role="dialog" aria-modal="true">
-          <h3>Delete this post?</h3>
-          <p>This will permanently remove the post and its comments.</p>
-          <div class="modal-actions">
-            <button id="pd-modal-cancel" class="btn-ghost">Cancel</button>
-            <button id="pd-modal-confirm" class="btn-danger">Delete</button>
-          </div>
-        </div>`;
-      document.body.appendChild(overlay);
-      document.getElementById('pd-modal-cancel').onclick = () => overlay.remove();
-      document.getElementById('pd-modal-confirm').onclick = async () => {
-        const confirmBtn = document.getElementById('pd-modal-confirm');
-        confirmBtn.disabled = true;
-        try {
-          const res = await fetch(`${API_URL}/posts/${postId}`, { method: 'DELETE', credentials: 'include' });
-          const data = await res.json();
-          if (res.ok && data.success) {
-            overlay.remove();
-            showToast('Post deleted');
-            try { history.replaceState({ velove: 0 }, '', `#/profile/${encodeURIComponent(currentUser.username)}`); } catch { /* ignore */ }
-            renderProfile(currentUser.username, false);
-          } else {
-            confirmBtn.disabled = false;
-            showToast(data.message || 'Could not delete post', 'err');
-          }
-        } catch {
-          confirmBtn.disabled = false;
-          showToast('Network error — post not deleted', 'err');
-        }
-      };
-    };
-  }
-}
-
-/* ============================== auth bindings ============================= */
-function bindAuth() {
-  const $ = (s) => document.querySelector(s);
-  const msgEl = $('#msg');
-  const showMsg = (t, ok = false) => { msgEl.textContent = t; msgEl.className = `msg ${ok ? 'ok' : 'err'}${t ? '' : ' hidden'}`; };
-
-  const setMode = (m) => {
-    mode = m;
-    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.mode === mode));
-    $('#signup-form').classList.toggle('hidden', mode !== 'signup');
-    $('#login-form').classList.toggle('hidden', mode !== 'login');
-    showMsg('');
-  };
-  document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => setMode(t.dataset.mode)));
-  document.querySelectorAll('[data-switch]').forEach((a) => a.addEventListener('click', (e) => { e.preventDefault(); setMode(a.dataset.switch); }));
-
-  document.querySelectorAll('.toggle-pw').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const input = document.getElementById(btn.dataset.target);
-      const show = input.type === 'password';
-      input.type = show ? 'text' : 'password';
-      btn.innerHTML = show ? eyeOffSvg : eyeSvg;
-    });
-  });
-
-  const googleLogin = () => { showMsg('Redirecting to Google…'); window.location.href = `${SERVER_URL}/auth/google`; };
-  $('#google-btn').addEventListener('click', googleLogin);
-  $('#google-btn-login').addEventListener('click', googleLogin);
-
-  /* live username availability (debounced) */
-  let unameTimer;
-  $('#su-username').addEventListener('input', () => {
-    clearTimeout(unameTimer);
-    const v = $('#su-username').value.trim();
-    const check = $('#username-check');
-    if (v.length < 3) { check.textContent = ''; return; }
-    unameTimer = setTimeout(async () => {
-      try {
-        const res = await fetch(`${API_URL}/user/username-available?username=${encodeURIComponent(v)}`);
-        const data = await res.json();
-        check.textContent = data.available ? '✓' : '✗';
-        check.className = `field-check ${data.available ? 'ok' : 'bad'}`;
-      } catch { check.textContent = ''; }
-    }, 350);
-  });
-
-  /* live confirm-password feedback */
-  $('#su-confirm').addEventListener('input', () => {
-    const confirm = $('#su-confirm').value, password = $('#su-password').value, hint = $('#confirm-hint');
-    if (!confirm) { hint.textContent = ''; return; }
-    hint.textContent = confirm === password ? '✓ Passwords match' : 'Passwords do not match';
-    hint.className = `hint ${confirm === password ? 'ok' : 'err'}`;
-  });
-
-  /* SIGNUP → onboarding step 1 */
-  $('#signup-form').addEventListener('submit', async (e) => {
-    e.preventDefault(); showMsg('');
-    const fullName = $('#su-name').value.trim();
-    const username = $('#su-username').value.trim();
-    const email = $('#su-email').value.trim();
-    const password = $('#su-password').value;
-    const confirm = $('#su-confirm').value;
-
-    if (!fullName || !username || !email || !password) return showMsg('Please fill in all fields.');
-    if (password.length < 6) return showMsg('Password must be at least 6 characters.');
-    if (password !== confirm) return showMsg('Passwords do not match.');
-    if (!$('#su-agree').checked) return showMsg('Please agree to the Terms of Service.');
-
-    try {
-      const res = await fetch(`${API_URL}/auth/register`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        credentials: 'include', body: JSON.stringify({ username, email, fullName, password }),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        saveSession(data.user);
-        renderOnboarding(1);
-      } else showMsg(data.errors?.[0]?.message || data.message || 'Signup failed.');
-    } catch { showMsg('Network error — is the backend running on port 5000?'); }
-  });
-
-  /* LOGIN → onboarding step 1 (light confirmation) */
-  $('#login-form').addEventListener('submit', async (e) => {
-    e.preventDefault(); showMsg('');
-    const emailOrUsername = $('#li-id').value.trim();
-    const password = $('#li-password').value;
-    if (!emailOrUsername || !password) return showMsg('Please enter your credentials.');
-    try {
-      const res = await fetch(`${API_URL}/auth/login`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        credentials: 'include', body: JSON.stringify({ emailOrUsername, password }),
-      });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        saveSession(data.user);
-        renderOnboarding(1); // continue the sequence: profile → people → welcome
-      } else showMsg(data.errors?.[0]?.message || data.message || 'Login failed.');
-    } catch { showMsg('Network error — is the backend running on port 5000?'); }
-  });
-}
-
-/* =========================== onboarding bindings ========================== */
-function bindProfileStep() {
-  const $ = (s) => document.querySelector(s);
-
-  $('#ob-avatar').addEventListener('change', (e) => {
-    const f = e.target.files[0];
-    if (f) $('#ob-avatar-img').src = URL.createObjectURL(f);
-  });
-
-  $('#ob-bio').addEventListener('input', () => { $('#ob-bio-count').textContent = $('#ob-bio').value.length; });
-
-  let availTimer;
-  $('#ob-username').addEventListener('input', () => {
-    clearTimeout(availTimer);
-    availTimer = setTimeout(async () => {
-      const v = $('#ob-username').value.trim();
-      const el = $('#ob-avail');
-      if (!v) { el.textContent = ''; return; }
-      try {
-        const res = await fetch(`${API_URL}/user/username-available?username=${encodeURIComponent(v)}`);
-        const data = await res.json();
-        const isOwn = currentUser && v === currentUser.username;
-        el.textContent = (data.available || isOwn) ? 'Available ✓' : 'Taken ✗';
-        el.className = `ob-avail ${(data.available || isOwn) ? 'ok' : 'bad'}`;
-      } catch { el.textContent = ''; }
-    }, 350);
-  });
-
-  $('#ob-continue').addEventListener('click', async () => {
-    const msg = $('#ob-msg');
-    const fullName = $('#ob-name').value.trim();
-    const username = $('#ob-username').value.trim();
-    const bio = $('#ob-bio').value.trim();
-    const file = $('#ob-avatar').files[0];
-    if (!fullName || !username) { msg.textContent = 'Name and username are required.'; msg.className = 'msg err'; return; }
-
-    // UPDATE profile (multipart when a photo was chosen)
-    let res;
-    if (file) {
-      const fd = new FormData();
-      fd.append('fullName', fullName); fd.append('username', username); fd.append('bio', bio);
-      fd.append('avatar', file);
-      res = await fetch(`${API_URL}/user/profile`, { method: 'PUT', credentials: 'include', body: fd });
-    } else {
-      res = await fetch(`${API_URL}/user/profile`, {
-        method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fullName, username, bio }),
-      });
-    }
-    const data = await res.json();
-    if (res.ok && data.success) {
-      saveSession({ ...currentUser, ...data.user });
-      renderOnboarding(2);
-    } else {
-      msg.textContent = data.message || 'Update failed.';
-      msg.className = 'msg err';
-    }
-  });
-}
-
-function bindPeopleStep() {
-  const $ = (s) => document.querySelector(s);
-
-  async function loadPeople(query = '') {
-    const list = $('#people-list');
-    try {
-      const url = query
-        ? `${API_URL}/user/search?query=${encodeURIComponent(query)}`
-        : `${API_URL}/user/suggested`;
-      const res = await fetch(url, { credentials: 'include' });
-      const data = await res.json();
-      const people = query ? (data.users || []) : (data.suggestions || []);
-      if (!people.length) { list.innerHTML = `<div class="empty">No people found${query ? ' for “' + query + '”' : ''}.</div>`; return; }
-      list.innerHTML = people.map(peopleRow).join('');
-      list.querySelectorAll('.follow-btn').forEach((btn) => {
-        btn.addEventListener('click', async () => {
-          const following = btn.classList.toggle('following');
-          btn.textContent = following ? 'Following' : 'Follow';
-          await fetch(`${API_URL}/user/follow/${btn.dataset.id}`, { method: 'POST', credentials: 'include' });
+    case 'randomVideoChat': {
+      // Restore from sessionStorage if browser was refreshed
+      const savedRc = JSON.parse(sessionStorage.getItem('velove_active_rc_session') || '{}');
+      if (savedRc.sessionId) {
+        navigate('randomVideoChat', {
+          sessionId: savedRc.sessionId,
+          strangerTempName: savedRc.strangerTempName,
+          myTempName: savedRc.myTempName,
+          push: false,
         });
-      });
-    } catch {
-      list.innerHTML = `<div class="empty">Couldn't load people.</div>`;
+      } else {
+        navigate('random-connect', { push: false });
+      }
+      break;
     }
+    case 'random-connect':
+      navigate('random-connect', { push: false });
+      break;
+    case 'saved':
+      navigate('saved', { push: false });
+      break;
+    case 'messages':
+      navigate('messages', { conversationId: route.params.conversationId, push: false });
+      break;
+    case 'chatInfo':
+      navigate('chatInfo', {
+        targetUserId: route.params.userId,
+        conversationId: route.params.conversationId,
+        push: false,
+      });
+      break;
+    case 'postDetail':
+      navigate('postDetail', { postId: route.params.postId, push: false });
+      break;
+    case 'profile':
+      navigate('profile', { username: route.params.username, push: false });
+      break;
+    case 'onboarding':
+      navigate('onboarding', { step: route.params.step });
+      break;
+    case 'home':
+    default:
+      navigate('home', { push: false });
+      break;
   }
-  loadPeople();
-
-  let timer;
-  $('#people-search').addEventListener('input', (e) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => loadPeople(e.target.value.trim()), 350);
-  });
-  $('#refresh-people').addEventListener('click', () => loadPeople());
-
-  $('#ob-continue').addEventListener('click', () => renderOnboarding(3));
-  $('#skip-people').addEventListener('click', () => renderOnboarding(3));
 }
 
-/* ================================== boot ================================== */
-const existing = loadSession();
-if (existing && existing.username) {
-  // Deep link (e.g. refresh on #/post/:id) wins over the onboarding sequence
-  if (!(location.hash && routeFromLocation(false))) renderOnboarding(1);
-} else renderAuth();
+// Initialize Router and wire window hashchange/popstate events
+const triggerRoute = initRouter(handleRoute);
+
+// Bootstrap Application
+loadSession();
+// Apply persisted light/dark preference before first paint of any view
+applyTheme(getStoredTheme());
+// Always trigger the route first — handleRoute and navigate() handle public flows
+// (reset-password, verify-email) correctly even without auth.
+triggerRoute();
+if (isAuthenticated()) {
+  initSocket();
+}

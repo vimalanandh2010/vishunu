@@ -5,10 +5,14 @@ import {
   followUnfollowUser,
   searchUsers,
   getSuggestedUsers,
+  toggleBlockUser,
+  reportUser,
+  updatePrivacySettings,
+  getUserChatInfo,
 } from '../controllers/userController.js';
 import User from '../models/User.js';
 import { protect } from '../middleware/authMiddleware.js';
-import { updateProfileValidator } from '../utils/validators.js';
+import { updateProfileValidator, validateObjectId } from '../utils/validators.js';
 import upload from '../middleware/uploadMiddleware.js';
 
 const router = express.Router();
@@ -30,8 +34,12 @@ router.get('/username-available', async (req, res, next) => {
 
 router.get('/profile/:username', protect, getUserProfile);
 router.put('/profile', protect, upload.single('avatar'), updateProfileValidator, updateUserProfile);
-router.post('/follow/:id', protect, followUnfollowUser);
+router.post('/follow/:id', protect, validateObjectId('id'), followUnfollowUser);
 router.get('/search', protect, searchUsers);
 router.get('/suggested', protect, getSuggestedUsers);
+router.post('/block/:userId', protect, validateObjectId('userId'), toggleBlockUser);
+router.post('/report/:userId', protect, validateObjectId('userId'), reportUser);
+router.put('/privacy', protect, updatePrivacySettings);
+router.get('/info/:userId', protect, validateObjectId('userId'), getUserChatInfo);
 
 export default router;

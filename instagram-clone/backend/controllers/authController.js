@@ -32,7 +32,7 @@ export const register = async (req, res, next) => {
     });
 
     // Send verification email (async, won't block response)
-    const verificationUrl = `${process.env.CLIENT_URL || 'http://localhost:5173'}/verify-email/${verificationToken}`;
+    const verificationUrl = `${process.env.CLIENT_URL || 'http://localhost:5173'}/#/verify-email/${verificationToken}`;
     const emailHtml = `
       <h1>Verify your Email</h1>
       <p>Thank you for registering. Please click the link below to verify your email address:</p>
@@ -192,8 +192,10 @@ export const forgotPassword = async (req, res, next) => {
     const { email } = req.body;
     const user = await User.findOne({ email });
 
+    // Always respond with the same message regardless of whether the email
+    // exists — this prevents account enumeration via the password-reset flow.
     if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found with that email' });
+      return res.json({ success: true, message: 'If that email is registered, a password reset link has been sent.' });
     }
 
     // Generate token
@@ -203,7 +205,7 @@ export const forgotPassword = async (req, res, next) => {
 
     await user.save();
 
-    const resetUrl = `${process.env.CLIENT_URL || 'http://localhost:5173'}/reset-password/${resetToken}`;
+    const resetUrl = `${process.env.CLIENT_URL || 'http://localhost:5173'}/#/reset-password/${resetToken}`;
     const emailHtml = `
       <h1>Reset Password Request</h1>
       <p>Please click the link below to reset your password. This link will expire in 10 minutes:</p>
@@ -217,7 +219,7 @@ export const forgotPassword = async (req, res, next) => {
         html: emailHtml,
       });
 
-      res.json({ success: true, message: 'Password reset link sent to your email' });
+      res.json({ success: true, message: 'If that email is registered, a password reset link has been sent.' });
     } catch (err) {
       user.resetPasswordToken = undefined;
       user.resetPasswordExpire = undefined;

@@ -52,16 +52,30 @@ const storage = cloudinaryConfigured
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 15 * 1024 * 1024, // 15MB file size limit
+    fileSize: 25 * 1024 * 1024, // 25MB file size limit
   },
   fileFilter: (req, file, cb) => {
+    // Allow images, videos, audio (voice notes), and safe document attachments
     if (
       file.mimetype.startsWith('image/') ||
-      file.mimetype.startsWith('video/')
+      file.mimetype.startsWith('video/') ||
+      file.mimetype.startsWith('audio/') ||
+      file.mimetype === 'application/pdf' ||
+      file.mimetype === 'application/msword' ||
+      file.mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+      file.mimetype === 'application/zip' ||
+      file.mimetype === 'text/plain' ||
+      file.mimetype === 'application/octet-stream'
     ) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only images and videos are allowed.'), false);
+      // Allow general file extensions as fallback
+      const ext = path.extname(file.originalname).toLowerCase();
+      if (['.jpg', '.jpeg', '.png', '.gif', '.webp', '.mp4', '.mov', '.webm', '.mp3', '.wav', '.ogg', '.m4a', '.pdf', '.doc', '.docx', '.zip', '.txt'].includes(ext)) {
+        cb(null, true);
+      } else {
+        cb(new Error('Unsupported file type for upload.'), false);
+      }
     }
   },
 });
